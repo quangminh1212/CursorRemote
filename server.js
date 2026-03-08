@@ -390,33 +390,63 @@ async function launchcursorWithCDP() {
     return cursorLaunchPromise;
 }
 
-// Find Cursor CDP endpoint
-// Find Cursor CDP endpoint
+// Find Cursor CDP endpoint (with identity verification to avoid connecting to Antigravity or other Electron apps)
 async function discoverCDP() {
     const errors = [];
     for (const port of PORTS) {
         try {
+            // Step 1: Verify this CDP port belongs to Cursor via /json/version
+            let isCursorApp = false;
+            try {
+                const versionInfo = await getJson(`http://127.0.0.1:${port}/json/version`);
+                const browser = (versionInfo.Browser || '').toLowerCase();
+                const userAgent = (versionInfo['User-Agent'] || '').toLowerCase();
+                if (browser.includes('cursor') || userAgent.includes('cursor')) {
+                    isCursorApp = true;
+                } else {
+                    console.log(`⚠️  Port ${port} belongs to "${versionInfo.Browser || 'unknown'}" (not Cursor) — skipping`);
+                    continue;
+                }
+            } catch (verErr) {
+                // /json/version failed but /json/list might still work — proceed with URL-based check
+            }
+
+            // Step 2: Discover targets from this verified Cursor port
             const list = await getJson(`http://127.0.0.1:${port}/json/list`);
 
+            // Extra safety: if /json/version was unavailable, filter out non-Cursor targets by URL
+            const isCursorTarget = (t) => {
+                if (isCursorApp) return true; // Already verified at port level
+                const url = (t.url || '').toLowerCase();
+                const title = (t.title || '').toLowerCase();
+                // Reject targets that clearly belong to Antigravity
+                if (url.includes('antigravity') || title.includes('antigravity')) return false;
+                return true;
+            };
+
             // Priority 1: Standard Workbench (The main window)
-            const workbench = list.find(t => t.url?.includes('workbench.html') || (t.title && t.title.includes('workbench')));
+            const workbench = list.find(t => isCursorTarget(t) && (t.url?.includes('workbench.html') || (t.title && t.title.includes('workbench'))));
             if (workbench && workbench.webSocketDebuggerUrl) {
-                console.log('Found Workbench target:', workbench.title);
+                console.log('✅ Found Cursor Workbench target:', workbench.title, `(port ${port})`);
                 return { port, url: workbench.webSocketDebuggerUrl };
             }
 
             // Priority 2: Jetski/Launchpad (Fallback)
-            const jetski = list.find(t => t.url?.includes('jetski') || t.title === 'Launchpad');
+            const jetski = list.find(t => isCursorTarget(t) && (t.url?.includes('jetski') || t.title === 'Launchpad'));
             if (jetski && jetski.webSocketDebuggerUrl) {
-                console.log('Found Jetski/Launchpad target:', jetski.title);
+                console.log('✅ Found Cursor Jetski/Launchpad target:', jetski.title, `(port ${port})`);
                 return { port, url: jetski.webSocketDebuggerUrl };
+            }
+
+            if (isCursorApp) {
+                errors.push(`${port}: Cursor running but no workbench target found`);
             }
         } catch (e) {
             errors.push(`${port}: ${e.message}`);
         }
     }
     const errorSummary = errors.length ? `Errors: ${errors.join(', ')}` : 'No ports responding';
-    throw new Error(`CDP not found. ${errorSummary}`);
+    throw new Error(`Cursor CDP not found. ${errorSummary}`);
 }
 
 // Connect to CDP
