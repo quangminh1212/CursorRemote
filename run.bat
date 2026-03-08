@@ -103,20 +103,30 @@ echo [4/5] Checking Cursor CDP connection...
 set CDP_FOUND=0
 for %%p in (9000 9001 9002 9003) do (
     if !CDP_FOUND!==0 (
+        :: First check if this port responds at all
         curl -s -o nul -w "%%{http_code}" http://127.0.0.1:%%p/json/list >nul 2>nul
         if !errorlevel!==0 (
-            curl -s http://127.0.0.1:%%p/json/list 2>nul | findstr /i "webSocketDebuggerUrl" >nul 2>nul
-            if !errorlevel!==0 (
-                echo       CDP found on port %%p
-                set CDP_FOUND=1
+            :: Verify this CDP belongs to Cursor (not Antigravity or other Electron apps)
+            set "IS_CURSOR=0"
+            for /f "usebackq delims=" %%v in (`curl -s http://127.0.0.1:%%p/json/version 2^>nul ^| findstr /i "Cursor"`) do (
+                set "IS_CURSOR=1"
+            )
+            if !IS_CURSOR!==1 (
+                curl -s http://127.0.0.1:%%p/json/list 2>nul | findstr /i "webSocketDebuggerUrl" >nul 2>nul
+                if !errorlevel!==0 (
+                    echo       CDP found on port %%p ^(verified: Cursor^)
+                    set CDP_FOUND=1
+                )
+            ) else (
+                echo       [INFO] Port %%p has CDP but not Cursor ^(skipping^)
             )
         )
     )
 )
 
 if !CDP_FOUND!==0 (
-    echo       [WARN] CDP not found on any port ^(9000-9003^).
-    echo       [INFO] Attempting to launch cursor with debug port...
+    echo       [WARN] Cursor CDP not found on any port ^(9000-9003^).
+    echo       [INFO] Attempting to launch Cursor with debug port...
 
     :: Kill existing cursor processes
     taskkill /f /im Cursor.exe >nul 2>&1
@@ -132,18 +142,31 @@ if !CDP_FOUND!==0 (
         echo       [WARN] Cursor.exe not found. Server will keep retrying CDP.
         echo              Launch manually: cursor . --remote-debugging-port=9000
     ) else (
-        echo       Launching cursor --remote-debugging-port=9000
+        :: Find a free port (avoid conflict with Antigravity or other apps)
+        set "CDP_PORT=9000"
+        for %%q in (9000 9001 9002 9003) do (
+            if !CDP_FOUND!==0 (
+                curl -s -o nul http://127.0.0.1:%%q/json/version >nul 2>nul
+                if !errorlevel! neq 0 (
+                    set "CDP_PORT=%%q"
+                    set CDP_FOUND=99
+                )
+            )
+        )
+        set CDP_FOUND=0
+
+        echo       Launching Cursor --remote-debugging-port=!CDP_PORT!
         echo       Workspace: !TARGET_REPO!
-        start "" "!CURSOR_EXE!" "!TARGET_REPO!" --remote-debugging-port=9000
+        start "" "!CURSOR_EXE!" "!TARGET_REPO!" --remote-debugging-port=!CDP_PORT!
         echo       Waiting for CDP to become ready...
 
         set CDP_READY=0
         for /l %%i in (1,1,15) do (
             if !CDP_READY!==0 (
                 timeout /t 2 /nobreak >nul
-                curl -s http://127.0.0.1:9000/json/list 2>nul | findstr /i "webSocketDebuggerUrl" >nul 2>nul
+                curl -s http://127.0.0.1:!CDP_PORT!/json/version 2>nul | findstr /i "Cursor" >nul 2>nul
                 if !errorlevel!==0 (
-                    echo       CDP ready on port 9000!
+                    echo       CDP ready on port !CDP_PORT! ^(verified: Cursor^)!
                     set CDP_READY=1
                 )
             )
