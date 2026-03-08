@@ -235,7 +235,8 @@ function findRecentcursorWorkspace() {
     }
 
     try {
-        const storage = JSON.parse(fs.readFileSync(storagePath, 'utf8'));
+        const raw = fs.readFileSync(storagePath, 'utf8').replace(/^\uFEFF/, '');
+        const storage = JSON.parse(raw);
         const folderUris = [
             storage?.windowsState?.lastActiveWindow?.folder,
             ...(storage?.backupWorkspaces?.folders || []).map(folder => folder?.folderUri)
@@ -345,41 +346,107 @@ async function launchcursorWithCDP() {
     cursorLaunchPromise = (async () => {
         const executable = findcursorExecutable();
         if (!executable) {
-            console.warn('Cursor executable not found. Start Cursor manually with --remote-debugging-port=9000.');
+            console.warn('Cursor executable not found. Start Cursor manually with CDP enabled.');
             return { attempted: false, reason: 'missing-executable' };
         }
 
         const targetWorkspace = getTargetWorkspace();
 
-        if (iscursorRunning()) {
-            console.log(`Cursor is running without CDP. Restarting with --remote-debugging-port=${PRIMARY_CDP_PORT}...`);
-            killcursorProcesses();
-            await sleep(1500);
-        } else {
-            console.log(`Cursor is not running. Launching with --remote-debugging-port=${PRIMARY_CDP_PORT}...`);
+        // Step 1: Ensure argv.json has remote-debugging-port
+        // Cursor 2.6.13+ rejects --remote-debugging-port as CLI flag
+        // but reads it from %APPDATA%\Cursor\argv.json (Electron/VS Code pattern)
+        const argvInjected = ensureCursorArgvCDP(PRIMARY_CDP_PORT);
+        if (argvInjected) {
+            console.log(`✅ Injected remote-debugging-port=${PRIMARY_CDP_PORT} into Cursor argv.json`);
         }
 
-        console.log(`Opening cursor on workspace: ${targetWorkspace}`);
+        // Step 2: Kill and restart Cursor so it picks up the new argv.json
+        if (iscursorRunning()) {
+            console.log(`Cursor is running without CDP. Restarting to enable CDP on port ${PRIMARY_CDP_PORT}...`);
+            killcursorProcesses();
+            await sleep(2500);
+        } else {
+            console.log(`Cursor is not running. Launching with CDP on port ${PRIMARY_CDP_PORT}...`);
+        }
 
+        console.log(`Opening Cursor on workspace: ${targetWorkspace}`);
+
+        // Step 3: Launch Cursor - use multiple strategies
+        let launched = false;
+
+        // Strategy A: Direct spawn with CLI flag (works on Antigravity, may work on older Cursor)
         try {
             const child = spawn(executable, [
                 targetWorkspace,
                 `--remote-debugging-port=${PRIMARY_CDP_PORT}`
             ], {
                 detached: true,
-                stdio: 'ignore'
+                stdio: 'ignore',
+                windowsHide: true
             });
-            child.unref();
+
+            // Listen for quick exit (bad option rejection)
+            const quickExitCode = await Promise.race([
+                new Promise(resolve => child.on('exit', resolve)),
+                new Promise(resolve => setTimeout(() => resolve(null), 3000)) // null = still running after 3s
+            ]);
+
+            if (quickExitCode === null) {
+                // Process still running after 3s — CLI flag accepted
+                child.unref();
+                launched = true;
+                console.log('Cursor launched with --remote-debugging-port CLI flag');
+            } else if (quickExitCode === 9 || quickExitCode === 1) {
+                // Exit code 9 = "bad option" — Cursor rejected the CLI flag
+                console.log(`Cursor rejected --remote-debugging-port CLI flag (exit ${quickExitCode}), using argv.json fallback`);
+            } else if (quickExitCode === 0) {
+                // Exit 0 = single-instance detected, delegated to existing process
+                console.log('Cursor delegated to existing instance (exit 0)');
+                launched = true;
+            }
         } catch (error) {
-            console.error(`Failed to launch cursor: ${error.message}`);
-            return { attempted: false, reason: 'spawn-failed', error: error.message };
+            console.warn(`Strategy A (direct spawn) failed: ${error.message}`);
         }
 
-        const ready = await waitForCDP(30000);
+        // Strategy B: Launch via cmd start (simulates double-click, allows argv.json to take effect)
+        if (!launched) {
+            try {
+                const child = spawn('cmd', ['/c', 'start', '', executable, targetWorkspace], {
+                    detached: true,
+                    stdio: 'ignore',
+                    windowsHide: true
+                });
+                child.unref();
+                launched = true;
+                console.log('Cursor launched via cmd start (argv.json approach)');
+            } catch (error) {
+                console.warn(`Strategy B (cmd start) failed: ${error.message}`);
+            }
+        }
+
+        // Strategy C: Launch via explorer.exe (last resort, simulates Windows shell activation)
+        if (!launched) {
+            try {
+                const child = spawn('explorer.exe', [executable], {
+                    detached: true,
+                    stdio: 'ignore'
+                });
+                child.unref();
+                launched = true;
+                console.log('Cursor launched via explorer.exe (shell activation)');
+            } catch (error) {
+                console.error(`All launch strategies failed. Last error: ${error.message}`);
+                return { attempted: false, reason: 'spawn-failed', error: error.message };
+            }
+        }
+
+        const ready = await waitForCDP(45000); // Longer timeout for Cursor startup
         if (ready) {
-            console.log(`Cursor CDP is ready on port ${PRIMARY_CDP_PORT}.`);
+            console.log(`✅ Cursor CDP is ready on port ${PRIMARY_CDP_PORT}.`);
         } else {
-            console.warn('cursor launched, but CDP is still not available after 30s.');
+            console.warn('⚠️  Cursor launched, but CDP is still not available after 45s.');
+            console.warn('   Ensure Cursor reads argv.json from: ' + getCursorArgvPath());
+            console.warn('   Or start Cursor manually with: --remote-debugging-port=9000');
         }
 
         return { attempted: true, ready, targetWorkspace };
@@ -388,6 +455,62 @@ async function launchcursorWithCDP() {
     });
 
     return cursorLaunchPromise;
+}
+
+// Inject remote-debugging-port into Cursor's argv.json
+// Cursor 2.6.13+ reads Electron flags from %APPDATA%\Cursor\argv.json
+function getCursorArgvPath() {
+    if (process.platform === 'win32' && process.env.APPDATA) {
+        return join(process.env.APPDATA, 'Cursor', 'argv.json');
+    }
+    if (process.platform === 'darwin' && process.env.HOME) {
+        return join(process.env.HOME, 'Library', 'Application Support', 'Cursor', 'argv.json');
+    }
+    if (process.env.HOME) {
+        return join(process.env.HOME, '.config', 'Cursor', 'argv.json');
+    }
+    return null;
+}
+
+function ensureCursorArgvCDP(port) {
+    const argvPath = getCursorArgvPath();
+    if (!argvPath) return false;
+
+    try {
+        // Read existing argv.json if present
+        let argv = {};
+        if (fs.existsSync(argvPath)) {
+            const raw = fs.readFileSync(argvPath, 'utf8')
+                .replace(/^\uFEFF/, '') // strip BOM
+                .replace(/\/\/.*/g, ''); // strip single-line comments (JSON5-like)
+            try {
+                argv = JSON.parse(raw);
+            } catch (e) {
+                console.warn(`Could not parse existing argv.json, will overwrite: ${e.message}`);
+                argv = {};
+            }
+        }
+
+        // Check if already configured
+        if (argv['remote-debugging-port'] === port) {
+            return true;
+        }
+
+        // Inject CDP port
+        argv['remote-debugging-port'] = port;
+
+        // Ensure directory exists
+        const dir = dirname(argvPath);
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+
+        fs.writeFileSync(argvPath, JSON.stringify(argv, null, 4), 'utf8');
+        return true;
+    } catch (error) {
+        console.error(`Failed to write Cursor argv.json: ${error.message}`);
+        return false;
+    }
 }
 
 // Find Cursor CDP endpoint (with identity verification to avoid connecting to Antigravity or other Electron apps)
@@ -2240,8 +2363,8 @@ async function createServer() {
             embedded: IS_EMBEDDED_RUNTIME,
             message: hasSSL ? 'HTTPS is active' :
                 certsExist && IS_EMBEDDED_RUNTIME ? 'Embedded runtime uses local HTTP. Browser mode can still use HTTPS.' :
-                certsExist ? 'Certificates exist, restart server to enable HTTPS' :
-                    'No certificates found'
+                    certsExist ? 'Certificates exist, restart server to enable HTTPS' :
+                        'No certificates found'
         });
     });
 
@@ -2643,9 +2766,9 @@ async function main() {
         }
 
         if (!cdpConnection) {
-        console.warn(`âš ï¸  Initial CDP discovery failed: ${err.message}`);
-        console.log('ðŸ’¡ Start Cursor with --remote-debugging-port=9000 to connect.');
-    }
+            console.warn(`âš ï¸  Initial CDP discovery failed: ${err.message}`);
+            console.log('ðŸ’¡ Start Cursor with --remote-debugging-port=9000 to connect.');
+        }
 
     }
 

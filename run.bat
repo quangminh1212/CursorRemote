@@ -128,10 +128,6 @@ if !CDP_FOUND!==0 (
     echo       [WARN] Cursor CDP not found on any port ^(9000-9003^).
     echo       [INFO] Attempting to launch Cursor with debug port...
 
-    :: Kill existing cursor processes
-    taskkill /f /im Cursor.exe >nul 2>&1
-    timeout /t 2 /nobreak >nul
-
     :: Find cursor executable
     set "CURSOR_EXE="
     if exist "%LOCALAPPDATA%\Programs\Cursor\Cursor.exe" (
@@ -140,7 +136,7 @@ if !CDP_FOUND!==0 (
 
     if "!CURSOR_EXE!"=="" (
         echo       [WARN] Cursor.exe not found. Server will keep retrying CDP.
-        echo              Launch manually: cursor . --remote-debugging-port=9000
+        echo              Launch manually with CDP enabled.
     ) else (
         :: Find a free port (avoid conflict with Antigravity or other apps)
         set "CDP_PORT=9000"
@@ -155,13 +151,40 @@ if !CDP_FOUND!==0 (
         )
         set CDP_FOUND=0
 
-        echo       Launching Cursor --remote-debugging-port=!CDP_PORT!
+        :: Inject CDP port into Cursor argv.json
+        :: Cursor 2.6.13+ rejects --remote-debugging-port as CLI flag
+        :: but reads it from %%APPDATA%%\Cursor\argv.json
+        set "ARGV_DIR=%APPDATA%\Cursor"
+        set "ARGV_FILE=!ARGV_DIR!\argv.json"
+        if not exist "!ARGV_DIR!" mkdir "!ARGV_DIR!"
+        echo {"remote-debugging-port": !CDP_PORT!} > "!ARGV_FILE!"
+        echo       Injected remote-debugging-port=!CDP_PORT! into argv.json
+
+        :: Kill existing Cursor (so it restarts with new argv.json)
+        taskkill /f /im Cursor.exe >nul 2>&1
+        timeout /t 2 /nobreak >nul
+
+        echo       Launching Cursor with CDP on port !CDP_PORT!
         echo       Workspace: !TARGET_REPO!
+
+        :: Strategy A: Try CLI flag first (may work on older Cursor versions)
         start "" "!CURSOR_EXE!" "!TARGET_REPO!" --remote-debugging-port=!CDP_PORT!
+        
+        :: Wait 3s to see if Cursor stays alive or exits with "bad option"
+        ping -n 4 127.0.0.1 >nul
+        
+        :: Check if Cursor is actually running
+        tasklist /FI "IMAGENAME eq Cursor.exe" /NH 2>nul | findstr /i "Cursor.exe" >nul 2>nul
+        if !errorlevel! neq 0 (
+            :: Strategy B: Launch without CLI flag, rely on argv.json
+            echo       [INFO] CLI flag rejected, launching with argv.json only...
+            start "" "!CURSOR_EXE!" "!TARGET_REPO!"
+        )
+
         echo       Waiting for CDP to become ready...
 
         set CDP_READY=0
-        for /l %%i in (1,1,15) do (
+        for /l %%i in (1,1,20) do (
             if !CDP_READY!==0 (
                 timeout /t 2 /nobreak >nul
                 curl -s http://127.0.0.1:!CDP_PORT!/json/version 2>nul | findstr /i "Cursor" >nul 2>nul
@@ -173,7 +196,8 @@ if !CDP_FOUND!==0 (
         )
 
         if !CDP_READY!==0 (
-            echo       [WARN] CDP not detected after 30s. Server will keep retrying...
+            echo       [WARN] CDP not detected after 40s. Server will keep retrying...
+            echo       [INFO] If Cursor ignores argv.json, try: Cursor.exe --remote-debugging-port=!CDP_PORT!
         )
     )
 ) else (
