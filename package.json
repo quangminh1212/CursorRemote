@@ -4,6 +4,7 @@
     "type": "module",
     "description": "Cursor Remote - Mobile web interface for monitoring and controlling Cursor AI sessions",
     "scripts": {
+        "smoke": "node smoke-test.js",
         "start": "node server.js",
         "start:embedded": "node tauri-server.mjs",
         "dev": "npx nodemon --watch server.js --watch public --ext js,html,css server.js",

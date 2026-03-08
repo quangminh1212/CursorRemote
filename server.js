@@ -31,7 +31,7 @@ try {
 // ============================================================
 // FILE LOGGING SYSTEM - All output goes to log.txt for debugging
 // ============================================================
-const LOG_FILE = join(RUNTIME_ROOT, 'log.txt');
+const LOG_FILE = join(RUNTIME_ROOT, 'cursor-remote.log');
 const MAX_LOG_SIZE = 5 * 1024 * 1024; // 5MB auto-rotate
 
 // Rotate log if too large
@@ -44,6 +44,7 @@ try {
 } catch (e) { /* ignore rotation errors */ }
 
 const logStream = fs.createWriteStream(LOG_FILE, { flags: 'a', encoding: 'utf8' });
+let terminalConsoleAvailable = true;
 
 function formatLogLine(level, args) {
     const ts = new Date().toISOString();
@@ -58,16 +59,30 @@ const _origLog = console.log.bind(console);
 const _origWarn = console.warn.bind(console);
 const _origError = console.error.bind(console);
 
+function writeToTerminalSafely(writer, args) {
+    if (!terminalConsoleAvailable) return;
+    try {
+        writer(...args);
+    } catch (error) {
+        if (error?.code === 'EPIPE' || String(error?.message || '').includes('EPIPE')) {
+            terminalConsoleAvailable = false;
+            try { logStream.write(formatLogLine('WARN', ['Terminal pipe closed; continuing with file logging only.'])); } catch (e) { /* ignore */ }
+            return;
+        }
+        throw error;
+    }
+}
+
 console.log = (...args) => {
-    _origLog(...args);
+    writeToTerminalSafely(_origLog, args);
     try { logStream.write(formatLogLine('INFO', args)); } catch (e) { /* ignore */ }
 };
 console.warn = (...args) => {
-    _origWarn(...args);
+    writeToTerminalSafely(_origWarn, args);
     try { logStream.write(formatLogLine('WARN', args)); } catch (e) { /* ignore */ }
 };
 console.error = (...args) => {
-    _origError(...args);
+    writeToTerminalSafely(_origError, args);
     try { logStream.write(formatLogLine('ERROR', args)); } catch (e) { /* ignore */ }
 };
 
@@ -75,6 +90,11 @@ console.error = (...args) => {
 // CRASH PROTECTION - Prevent process from dying on unhandled errors
 // ============================================================
 process.on('uncaughtException', (err) => {
+    if (err?.code === 'EPIPE' || String(err?.message || '').includes('EPIPE')) {
+        terminalConsoleAvailable = false;
+        try { logStream.write(formatLogLine('WARN', ['Suppressed EPIPE from terminal output.'])); } catch (e) { /* ignore */ }
+        return;
+    }
     console.error('ðŸ’¥ UNCAUGHT EXCEPTION (process kept alive):', err.message);
     console.error('   Stack:', err.stack);
 });
@@ -108,6 +128,435 @@ let cdpConnection = null;
 let lastSnapshot = null;
 let lastSnapshotHash = null;
 let cursorLaunchPromise = null;
+
+const CURSOR_UI_HELPERS = String.raw`
+const __cr = (() => {
+    const getClassName = (el) => {
+        if (!el) return '';
+        if (typeof el.className === 'string') return el.className;
+        if (el.className && typeof el.className.baseVal === 'string') return el.className.baseVal;
+        return '';
+    };
+
+    const isVisible = (el) => {
+        if (!el || !el.isConnected || typeof el.getBoundingClientRect !== 'function') return false;
+        const rect = el.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return false;
+        return el.offsetParent !== null || getComputedStyle(el).position === 'fixed';
+    };
+
+    const textOf = (el) => ((el && (el.innerText || el.textContent)) || '').replace(/\s+/g, ' ').trim();
+
+    const queryAllVisible = (selector, root = document) => Array.from(root.querySelectorAll(selector)).filter(isVisible);
+
+    const findPanel = () => {
+        return document.querySelector('[id^="workbench.panel.aichat"]') ||
+            document.getElementById('conversation') ||
+            document.getElementById('chat') ||
+            document.getElementById('cascade');
+    };
+
+    const findEditor = () => {
+        const panel = findPanel();
+        const candidates = [];
+        if (panel) candidates.push(...queryAllVisible('[data-lexical-editor="true"], [contenteditable="true"]', panel));
+        candidates.push(...queryAllVisible('[data-lexical-editor="true"], [contenteditable="true"]'));
+        return candidates
+            .sort((a, b) => a.getBoundingClientRect().y - b.getBoundingClientRect().y)
+            .at(-1) || null;
+    };
+
+    const findPanelScrollRoot = () => {
+        const panel = findPanel();
+        if (!panel) return null;
+
+        const candidates = [
+            ...queryAllVisible('.pane-body .monaco-scrollable-element, .composer-bar .monaco-scrollable-element, .scrollable-div-container, .ui-scroll-area__viewport, .ui-scroll-area', panel),
+            ...queryAllVisible('.monaco-scrollable-element, [class*="scroll"], [style*="overflow"]', panel)
+        ].filter(el => el.scrollHeight > el.clientHeight + 12);
+
+        candidates.sort((a, b) => {
+            const sizeDiff = b.clientHeight - a.clientHeight;
+            if (sizeDiff) return sizeDiff;
+            return a.getBoundingClientRect().y - b.getBoundingClientRect().y;
+        });
+
+        return candidates[0] || panel;
+    };
+
+    const click = (el) => {
+        if (!el) return false;
+        const target = el.closest?.('.anysphere-icon-button, .send-with-mode, button, [role="button"], a, .cursor-pointer') || el;
+        for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+            try {
+                target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+            } catch (e) { /* ignore */ }
+        }
+        try { target.click?.(); } catch (e) { /* ignore */ }
+        return true;
+    };
+
+    const resolveTrigger = (el) => el?.closest?.(
+        '.composer-unified-dropdown, .composer-unified-dropdown-model, .anysphere-icon-button, .send-with-mode, button, [role="button"], a, .cursor-pointer'
+    ) || el || null;
+
+    const focusEditor = (editor) => {
+        if (!editor) return;
+        editor.focus();
+        const selection = window.getSelection?.();
+        if (!selection) return;
+        const range = document.createRange();
+        range.selectNodeContents(editor);
+        range.collapse(false);
+        selection.removeAllRanges();
+        selection.addRange(range);
+    };
+
+    const setEditorText = (editor, text) => {
+        if (!editor) return false;
+        focusEditor(editor);
+        try { document.execCommand?.('selectAll', false, null); } catch (e) { /* ignore */ }
+        try { document.execCommand?.('delete', false, null); } catch (e) { /* ignore */ }
+
+        let inserted = false;
+        try { inserted = !!document.execCommand?.('insertText', false, text); } catch (e) { /* ignore */ }
+
+        if (!inserted) {
+            editor.textContent = text;
+            try { editor.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, inputType: 'insertText', data: text })); } catch (e) { /* ignore */ }
+            try { editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text })); } catch (e) { /* ignore */ }
+        }
+
+        return true;
+    };
+
+    const findByAria = (needle) => Array.from(document.querySelectorAll('button, [role="button"], a, div')).find(el => {
+        if (!isVisible(el)) return false;
+        return (el.getAttribute('aria-label') || '').toLowerCase().includes(needle);
+    });
+
+    const findNewChatButton = () => {
+        const legacy = document.querySelector('[data-tooltip-id="new-conversation-tooltip"]');
+        if (legacy && isVisible(legacy)) return legacy;
+        return findByAria('new chat') ||
+            Array.from(document.querySelectorAll('button, [role="button"], a')).find(el => isVisible(el) && /\bnew chat\b/i.test(textOf(el))) ||
+            null;
+    };
+
+    const findHistoryButton = () => {
+        return findByAria('chat history') ||
+            document.querySelector('[data-tooltip-id*="history"], [data-tooltip-id*="past"], [data-tooltip-id*="recent"], [data-tooltip-id*="conversation-history"]') ||
+            null;
+    };
+
+    const findAttachButton = () => {
+        const icon = queryAllVisible('.codicon-image-two, .codicon-paperclip, .codicon-attach, svg.lucide-paperclip, svg.lucide-plus', document)
+            .find(candidate => {
+                const trigger = resolveTrigger(candidate);
+                if (!trigger || !isVisible(trigger)) return false;
+                const aria = (trigger.getAttribute('aria-label') || '').toLowerCase();
+                const title = (trigger.getAttribute('title') || '').toLowerCase();
+                return !aria.includes('new chat') && !title.includes('new chat');
+            });
+        if (icon) return resolveTrigger(icon);
+
+        const editor = findEditor();
+        if (!editor) return null;
+        const editorRect = editor.getBoundingClientRect();
+        const candidates = queryAllVisible('button, [role="button"], a, div', document)
+            .map(resolveTrigger)
+            .filter((el, index, arr) => el && arr.indexOf(el) === index);
+
+        return candidates.find(button => {
+            const rect = button.getBoundingClientRect();
+            const aria = (button.getAttribute('aria-label') || '').toLowerCase();
+            const title = (button.getAttribute('title') || '').toLowerCase();
+            const cls = getClassName(button).toLowerCase();
+            const nearEditor = Math.abs(rect.top - editorRect.top) < 160 || Math.abs(rect.bottom - editorRect.bottom) < 160;
+            return nearEditor && (
+                aria.includes('context') || aria.includes('attach') || aria.includes('file') || aria.includes('image') ||
+                title.includes('context') || title.includes('attach') || title.includes('file') || title.includes('image') ||
+                cls.includes('attach') || cls.includes('image')
+            );
+        }) || null;
+    };
+
+    const findHistoryMenu = () => {
+        const candidates = queryAllVisible('[id^="composer-history-menu"], .compact-agent-history-react-menu-content, .ui-menu__content, [role="menu"], .context-view', document);
+        candidates.sort((a, b) => {
+            const aRect = a.getBoundingClientRect();
+            const bRect = b.getBoundingClientRect();
+            return (bRect.width * bRect.height) - (aRect.width * aRect.height);
+        });
+        return candidates[0] || null;
+    };
+
+    const findMenuContainers = () => {
+        const containers = queryAllVisible('[role="menu"], [role="listbox"], .ui-menu__content, .context-view, [data-radix-popper-content-wrapper]', document);
+        containers.sort((a, b) => {
+            const aRect = a.getBoundingClientRect();
+            const bRect = b.getBoundingClientRect();
+            return (bRect.width * bRect.height) - (aRect.width * aRect.height);
+        });
+        return containers;
+    };
+
+    const getMenuItems = (container) => {
+        if (!container) return [];
+
+        const seen = new Set();
+        const items = [];
+        const candidates = Array.from(container.querySelectorAll('[role="menuitem"], [role="option"], button, [role="button"], a, div, span')).filter(isVisible);
+
+        for (const el of candidates) {
+            const text = textOf(el);
+            const lower = text.toLowerCase();
+            if (!text || text.length > 140) continue;
+            if (lower === 'archived' || lower === 'no matching agent') continue;
+            if (lower.startsWith('show ')) continue;
+            if (lower.endsWith(' ago') || /^\d+\s*(sec|min|hr|day|wk|mo|yr)/i.test(lower)) continue;
+            if (seen.has(lower)) continue;
+
+            const clickable = resolveTrigger(el);
+            if (!clickable || !isVisible(clickable)) continue;
+
+            seen.add(lower);
+            items.push({ title: text, element: clickable });
+        }
+
+        return items;
+    };
+
+    const getMenuItemTexts = (containers = findMenuContainers()) => {
+        const seen = new Set();
+        const texts = [];
+        for (const container of containers) {
+            for (const item of getMenuItems(container)) {
+                const key = item.title.toLowerCase();
+                if (seen.has(key)) continue;
+                seen.add(key);
+                texts.push(item.title);
+            }
+        }
+        return texts;
+    };
+
+    const getHistoryItems = () => {
+        const menu = findHistoryMenu();
+        if (!menu) return [];
+
+        const seen = new Set();
+        const items = [];
+        const elements = Array.from(menu.querySelectorAll('button, [role="menuitem"], [role="button"], a, div, span')).filter(isVisible);
+
+        for (const el of elements) {
+            const text = textOf(el);
+            const lower = text.toLowerCase();
+            if (!text || text.length < 2 || text.length > 140) continue;
+            if (lower === 'archived' || lower === 'no matching agent') continue;
+            if (lower.startsWith('show ')) continue;
+            if (lower.endsWith(' ago') || /^\d+\s*(sec|min|hr|day|wk|mo|yr)/i.test(lower)) continue;
+            if (seen.has(text)) continue;
+
+            const clickable = el.closest('button, [role="menuitem"], [role="button"], a, div');
+            if (!clickable || !isVisible(clickable)) continue;
+
+            seen.add(text);
+            items.push({ title: text });
+        }
+
+        return items;
+    };
+
+    const findSendButton = () => {
+        const icon = queryAllVisible('.codicon-arrow-up-two, .codicon-arrow-right, svg.lucide-arrow-right', document)[0];
+        if (!icon) return null;
+        const button = icon.closest('.anysphere-icon-button, .send-with-mode, button, [role="button"], div');
+        return isVisible(button) ? button : null;
+    };
+
+    const findStopButton = () => {
+        const panel = findPanel() || document;
+        const controls = queryAllVisible('[data-click-ready="true"], button, [role="button"], a, div', panel)
+            .map(resolveTrigger)
+            .filter((el, index, arr) => el && arr.indexOf(el) === index);
+
+        const textButton = controls
+            .map(el => ({
+                el,
+                text: textOf(el),
+                aria: (el.getAttribute('aria-label') || '').toLowerCase(),
+                rect: el.getBoundingClientRect()
+            }))
+            .filter(item => /^stop$/i.test(item.text) || item.aria.includes('stop') || item.aria.includes('cancel'))
+            .sort((a, b) => b.rect.y - a.rect.y)[0];
+        if (textButton) return textButton.el;
+
+        const legacy = document.querySelector('[data-tooltip-id="input-send-button-cancel-tooltip"]');
+        if (legacy && isVisible(legacy)) return legacy;
+
+        const icons = queryAllVisible('.codicon-debug-stop, .codicon-sync, .codicon-loading, .codicon-debug-pause, .codicon-primitive-square, .codicon-circle-slash, .lucide-square, .lucide-loader', document);
+        for (const icon of icons) {
+            const button = icon.closest('.anysphere-icon-button, .send-with-mode, button, [role="button"], div');
+            if (isVisible(button)) return button;
+        }
+        return null;
+    };
+
+    const getComposerStatus = () => {
+        const panel = findPanel();
+        const composer = panel ? panel.querySelector('.composer-bar[data-composer-status]') : null;
+        return (composer?.getAttribute('data-composer-status') || '').trim().toLowerCase();
+    };
+
+    const isBusy = () => {
+        const status = getComposerStatus();
+        return ['generating', 'running', 'streaming', 'working', 'loading'].includes(status);
+    };
+
+    const getDropdownText = (selector) => {
+        const panel = findPanel();
+        const el = panel ? panel.querySelector(selector) : null;
+        return textOf(el);
+    };
+
+    const getModeText = () => getDropdownText('.composer-unified-dropdown');
+    const getModelText = () => getDropdownText('.composer-unified-dropdown-model');
+
+    const findDropdownMenuItem = (targetText, containers = findMenuContainers()) => {
+        const normalized = targetText.trim().toLowerCase();
+        const items = containers.flatMap(getMenuItems);
+        return items.find(item => item.title.toLowerCase() === normalized)?.element ||
+            items.find(item => item.title.toLowerCase().includes(normalized))?.element ||
+            items.find(item => normalized.includes(item.title.toLowerCase()))?.element ||
+            null;
+    };
+
+    const findModeButton = () => {
+        const panel = findPanel();
+        const label = panel ? panel.querySelector('.composer-unified-dropdown') : null;
+        return resolveTrigger(label);
+    };
+
+    const findModelButton = () => {
+        const panel = findPanel();
+        const label = panel ? panel.querySelector('.composer-unified-dropdown-model') : null;
+        return resolveTrigger(label);
+    };
+
+    const collectMessageNodes = () => {
+        const panel = findPanel();
+        if (!panel) return [];
+
+        const candidates = Array.from(panel.querySelectorAll('.composer-message-group, .relative.composer-rendered-message, .composer-tool-former-message, .markdown-root, [class*="message"]')).filter(isVisible);
+        const nodes = [];
+
+        for (const el of candidates) {
+            if (el.closest('.composer-input-blur-wrapper, .ai-input-full-input-box, .simple-find-part-wrapper, .compact-agent-history-react-menu-content, .ui-menu__content')) continue;
+            if (nodes.some(existing => existing.contains(el))) continue;
+            nodes.push(el);
+        }
+
+        return nodes;
+    };
+
+    return {
+        getClassName,
+        isVisible,
+        textOf,
+        queryAllVisible,
+        findPanel,
+        findEditor,
+        findPanelScrollRoot,
+        click,
+        focusEditor,
+        setEditorText,
+        findNewChatButton,
+        findHistoryButton,
+        findAttachButton,
+        findHistoryMenu,
+        findMenuContainers,
+        getMenuItems,
+        getMenuItemTexts,
+        getHistoryItems,
+        findSendButton,
+        findStopButton,
+        getComposerStatus,
+        isBusy,
+        getModeText,
+        getModelText,
+        findDropdownMenuItem,
+        findModeButton,
+        findModelButton,
+        collectMessageNodes
+    };
+})();
+`;
+
+function getOrderedContexts(cdp) {
+    return [...(cdp?.contexts || [])].sort((a, b) => Number(!!b?.auxData?.isDefault) - Number(!!a?.auxData?.isDefault));
+}
+
+function getExceptionMessage(exceptionDetails) {
+    return exceptionDetails?.exception?.description ||
+        exceptionDetails?.text ||
+        exceptionDetails?.exception?.value ||
+        'Runtime.evaluate failed';
+}
+
+function buildCursorExpression(body) {
+    return `(async () => { ${CURSOR_UI_HELPERS}\n${body}\n})()`;
+}
+
+async function evaluateCursor(cdp, body, {
+    accept = (value) => value !== undefined && value !== null,
+    awaitPromise = true,
+    returnByValue = true
+} = {}) {
+    const contexts = getOrderedContexts(cdp);
+    if (!contexts.length) {
+        return { error: 'No execution contexts available' };
+    }
+
+    let lastError = null;
+    let lastValue = null;
+
+    for (const ctx of contexts) {
+        try {
+            const result = await cdp.call('Runtime.evaluate', {
+                expression: buildCursorExpression(body),
+                returnByValue,
+                awaitPromise,
+                contextId: ctx.id
+            });
+
+            if (result.exceptionDetails) {
+                lastError = getExceptionMessage(result.exceptionDetails);
+                continue;
+            }
+
+            const value = result.result?.value;
+            if (accept(value)) {
+                return value;
+            }
+
+            if (value !== undefined) {
+                lastValue = value;
+                if (value?.error) lastError = value.error;
+            }
+        } catch (error) {
+            lastError = error.message;
+        }
+    }
+
+    return lastValue ?? { error: lastError || 'No matching DOM context' };
+}
+
+async function clickAtPoint(cdp, x, y) {
+    await cdp.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+    await cdp.call('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+    await cdp.call('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+}
 
 // Kill any existing process on the server port (prevents EADDRINUSE)
 async function killPortProcess(port) {
@@ -665,172 +1114,31 @@ async function connectCDP(url) {
 
 // Capture chat snapshot
 async function captureSnapshot(cdp) {
-    const CAPTURE_SCRIPT = `(async () => {
-        const cascade = document.getElementById('conversation') || document.getElementById('chat') || document.getElementById('cascade');
-        if (!cascade) {
-            // Debug info
-            const body = document.body;
-            const childIds = Array.from(body.children).map(c => c.id).filter(id => id).join(', ');
-            return { error: 'chat container not found', debug: { hasBody: !!body, availableIds: childIds } };
-        }
-        
-        const cascadeStyles = window.getComputedStyle(cascade);
-        
-        // Find the main scrollable container
-        const scrollContainer = cascade.querySelector('.overflow-y-auto, [data-scroll-area]') || cascade;
-        const scrollInfo = {
-            scrollTop: scrollContainer.scrollTop,
-            scrollHeight: scrollContainer.scrollHeight,
-            clientHeight: scrollContainer.clientHeight,
-            scrollPercent: scrollContainer.scrollTop / (scrollContainer.scrollHeight - scrollContainer.clientHeight) || 0
-        };
-        
-        // Clone cascade to modify it without affecting the original
-        const clone = cascade.cloneNode(true);
-        
-        // Aggressively remove the entire interaction/input/review area
-        try {
-            // 1. Identify common interaction wrappers by class combinations
-            const interactionSelectors = [
-                '.relative.flex.flex-col.gap-8',
-                '.flex.grow.flex-col.justify-start.gap-8',
-                'div[class*="interaction-area"]',
-                '.p-1.bg-gray-500\\/10',
-                '.outline-solid.justify-between',
-                '[contenteditable="true"]'
-            ];
+    const result = await evaluateCursor(cdp, `
+        const panel = __cr.findPanel();
+        const editor = __cr.findEditor();
 
-            interactionSelectors.forEach(selector => {
-                clone.querySelectorAll(selector).forEach(el => {
-                    try {
-                        // For the editor, we want to remove its interaction container
-                        if (selector === '[contenteditable="true"]') {
-                            const area = el.closest('.relative.flex.flex-col.gap-8') || 
-                                         el.closest('.flex.grow.flex-col.justify-start.gap-8') ||
-                                         el.closest('div[id^="interaction"]') ||
-                                         el.parentElement?.parentElement;
-                            if (area && area !== clone) area.remove();
-                            else el.remove();
-                        } else {
-                            el.remove();
-                        }
-                    } catch(e) {}
-                });
-            });
-
-            // 2. Text-based cleanup for stray status bars
-            const allElements = clone.querySelectorAll('*');
-            allElements.forEach(el => {
-                try {
-                    const text = (el.innerText || '').toLowerCase();
-                    if (text.includes('review changes') || text.includes('files with changes') || text.includes('context found')) {
-                        // If it's a small structural element or has buttons, it's likely a bar
-                        if (el.children.length < 10 || el.querySelector('button') || el.classList?.contains('justify-between')) {
-                            el.style.display = 'none'; // Use both hide and remove
-                            el.remove();
-                        }
-                    }
-                } catch (e) {}
-            });
-        } catch (globalErr) { }
-
-        // Mark user messages vs assistant messages for styling
-        try {
-            const turnsContainer = clone.querySelector('.relative.flex.flex-col.gap-y-3.px-4') || clone;
-            const turns = Array.from(turnsContainer.children).filter(el => el.tagName === 'DIV');
-            turns.forEach(turn => {
-                const children = Array.from(turn.children).filter(c => c.tagName === 'DIV');
-                if (children.length >= 1) {
-                    children[0].setAttribute('data-role', 'user');
-                    for (let i = 1; i < children.length; i++) {
-                        children[i].setAttribute('data-role', 'assistant');
-                    }
+        if (!panel || !editor) {
+            return {
+                error: 'chat panel not found',
+                debug: {
+                    hasPanel: !!panel,
+                    hasEditor: !!editor,
+                    knownIds: Array.from(document.querySelectorAll('[id]')).slice(0, 80).map(el => el.id)
                 }
-            });
-        } catch(e) {}
+            };
+        }
 
-        // Convert local images to base64
-        const images = clone.querySelectorAll('img');
-        const promises = Array.from(images).map(async (img) => {
-            const rawSrc = img.getAttribute('src');
-            if (rawSrc && (rawSrc.startsWith('/') || rawSrc.startsWith('vscode-file:')) && !rawSrc.startsWith('data:')) {
-                try {
-                    const res = await fetch(rawSrc);
-                    const blob = await res.blob();
-                    await new Promise(r => {
-                        const reader = new FileReader();
-                        reader.onloadend = () => { img.src = reader.result; r(); };
-                        reader.onerror = () => r();
-                        reader.readAsDataURL(blob);
-                    });
-                } catch(e) {}
-            }
-        });
-        await Promise.all(promises);
+        const clone = panel.cloneNode(true);
+        clone.querySelectorAll('.composite.title, .title-actions, .simple-find-part-wrapper, .composer-input-blur-wrapper, .ai-input-full-input-box, .compact-agent-history-react-menu-content, .ui-menu__content, .context-view, .announcement-modal, .announcement-modal-close-button').forEach(el => el.remove());
 
-        // Fix inline file references: cursor nests <div> elements inside
-        // <span> and <p> tags (e.g. file-type icons). Browsers auto-close <p> and
-        // <span> when they encounter a <div>, causing unwanted line breaks.
-        // Solution: Convert any <div> inside an inline parent to a <span>.
-        try {
-            const inlineTags = new Set(['SPAN', 'P', 'A', 'LABEL', 'EM', 'STRONG', 'CODE']);
-            const allDivs = Array.from(clone.querySelectorAll('div'));
-            for (const div of allDivs) {
-                try {
-                    if (!div.parentNode) continue;
-                    const parent = div.parentElement;
-                    if (!parent) continue;
-                    
-                    const parentIsInline = inlineTags.has(parent.tagName) || 
-                        (parent.className && (parent.className.includes('inline-flex') || parent.className.includes('inline-block')));
-                        
-                    if (parentIsInline) {
-                        const span = document.createElement('span');
-                        // MOVE children instead of copying (prevents orphaning nested divs)
-                        while (div.firstChild) {
-                            span.appendChild(div.firstChild);
-                        }
-                        if (div.className) span.className = div.className;
-                        if (div.getAttribute('style')) span.setAttribute('style', div.getAttribute('style'));
-                        span.style.display = 'inline-flex';
-                        span.style.alignItems = 'center';
-                        span.style.verticalAlign = 'middle';
-                        div.replaceWith(span);
-                    }
-                } catch(e) {}
-            }
-        } catch(e) {}
-        
-        const html = clone.outerHTML;
-        
-        const rules = [];
-        for (const sheet of document.styleSheets) {
-            try {
-                for (const rule of sheet.cssRules) {
-                    rules.push(rule.cssText);
-                }
-            } catch (e) { }
-        }
-        const allCSS = rules.join('\\n');
-        
-        // Extract comprehensive theme colors
-        const bodyStyles = window.getComputedStyle(document.body);
-        const rootStyles = window.getComputedStyle(document.documentElement);
-        
-        // Walk up from cascade to find the first non-transparent background
-        let effectiveBg = cascadeStyles.backgroundColor;
-        let el = cascade;
-        while (el && (effectiveBg === 'transparent' || effectiveBg === 'rgba(0, 0, 0, 0)')) {
-            el = el.parentElement;
-            if (el) effectiveBg = window.getComputedStyle(el).backgroundColor;
-        }
-        if (effectiveBg === 'transparent' || effectiveBg === 'rgba(0, 0, 0, 0)') {
-            effectiveBg = bodyStyles.backgroundColor;
-        }
-        
-        // Extract VS Code / cursor theme CSS variables
+        const scrollTarget = __cr.findPanelScrollRoot() || panel;
+        const bodyStyles = getComputedStyle(document.body);
+        const panelStyles = getComputedStyle(panel);
+        const rootStyles = getComputedStyle(document.documentElement);
+
         const themeVars = {};
-        const varNames = [
+        [
             '--vscode-editor-background', '--vscode-editor-foreground',
             '--vscode-sideBar-background', '--vscode-panel-background',
             '--vscode-input-background', '--vscode-input-foreground',
@@ -841,121 +1149,168 @@ async function captureSnapshot(cdp) {
             '--vscode-editorWidget-background',
             '--vscode-activityBar-background',
             '--vscode-tab-activeBackground'
-        ];
-        varNames.forEach(v => {
-            const val = rootStyles.getPropertyValue(v).trim();
-            if (val) themeVars[v] = val;
+        ].forEach(name => {
+            const value = rootStyles.getPropertyValue(name).trim();
+            if (value) themeVars[name] = value;
         });
-        
+
+        const html = clone.outerHTML;
+
         return {
-            html: html,
-            css: allCSS,
-            backgroundColor: effectiveBg,
+            html,
+            css: '',
+            backgroundColor: panelStyles.backgroundColor || bodyStyles.backgroundColor,
             bodyBackgroundColor: bodyStyles.backgroundColor,
-            color: cascadeStyles.color,
+            color: panelStyles.color || bodyStyles.color,
             bodyColor: bodyStyles.color,
-            fontFamily: cascadeStyles.fontFamily,
-            themeVars: themeVars,
-            scrollInfo: scrollInfo,
+            fontFamily: panelStyles.fontFamily || bodyStyles.fontFamily,
+            themeVars,
+            scrollInfo: {
+                scrollTop: scrollTarget.scrollTop || 0,
+                scrollHeight: scrollTarget.scrollHeight || 0,
+                clientHeight: scrollTarget.clientHeight || 0,
+                scrollPercent: scrollTarget.scrollHeight > scrollTarget.clientHeight
+                    ? (scrollTarget.scrollTop / (scrollTarget.scrollHeight - scrollTarget.clientHeight))
+                    : 0
+            },
             stats: {
                 nodes: clone.getElementsByTagName('*').length,
                 htmlSize: html.length,
-                cssSize: allCSS.length
+                cssSize: 0
             }
         };
-    })()`;
+    `, {
+        accept: (value) => value && !value.error && !!value.html
+    });
 
-    for (const ctx of cdp.contexts) {
-        try {
-            // console.log(`Trying context ${ctx.id} (${ctx.name || ctx.origin})...`);
-            const result = await cdp.call("Runtime.evaluate", {
-                expression: CAPTURE_SCRIPT,
-                returnByValue: true,
-                awaitPromise: true,
-                contextId: ctx.id
-            });
-
-            if (result.exceptionDetails) {
-                // console.log(`Context ${ctx.id} exception:`, result.exceptionDetails);
-                continue;
-            }
-
-            if (result.result && result.result.value) {
-                const val = result.result.value;
-                if (val.error) {
-                    // console.log(`Context ${ctx.id} script error:`, val.error);
-                    // if (val.debug) console.log(`   Debug info:`, JSON.stringify(val.debug));
-                } else {
-                    return val;
-                }
-            }
-        } catch (e) {
-            console.log(`Context ${ctx.id} connection error:`, e.message);
-        }
-    }
-
-    return null;
+    return result && !result.error ? result : null;
 }
 
 // Inject message into Cursor
 async function injectMessage(cdp, text) {
-    // Use JSON.stringify for robust escaping (handles ", \, newlines, backticks, unicode, etc.)
     const safeText = JSON.stringify(text);
-
-    const EXPRESSION = `(async () => {
-        const cancel = document.querySelector('[data-tooltip-id="input-send-button-cancel-tooltip"]');
-        if (cancel && cancel.offsetParent !== null) return { ok:false, reason:"busy" };
-
-        const editors = [...document.querySelectorAll('#conversation [contenteditable="true"], #chat [contenteditable="true"], #cascade [contenteditable="true"]')]
-            .filter(el => el.offsetParent !== null);
-        const editor = editors.at(-1);
-        if (!editor) return { ok:false, error:"editor_not_found" };
+    const prepared = await evaluateCursor(cdp, `
+        const editor = __cr.findEditor();
+        if (!editor) return { ok: false, error: 'editor_not_found' };
+        if (__cr.isBusy()) return { ok: false, reason: 'busy', status: __cr.getComposerStatus() };
 
         const textToInsert = ${safeText};
-
-        editor.focus();
-        document.execCommand?.("selectAll", false, null);
-        document.execCommand?.("delete", false, null);
-
-        let inserted = false;
-        try { inserted = !!document.execCommand?.("insertText", false, textToInsert); } catch {}
-        if (!inserted) {
-            editor.textContent = textToInsert;
-            editor.dispatchEvent(new InputEvent("beforeinput", { bubbles:true, inputType:"insertText", data: textToInsert }));
-            editor.dispatchEvent(new InputEvent("input", { bubbles:true, inputType:"insertText", data: textToInsert }));
-        }
-
+        __cr.setEditorText(editor, textToInsert);
         await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
 
-        const submit = document.querySelector("svg.lucide-arrow-right")?.closest("button");
-        if (submit && !submit.disabled) {
-            submit.click();
-            return { ok:true, method:"click_submit" };
-        }
+        const sendButton = __cr.findSendButton();
+        const sendRect = sendButton ? sendButton.getBoundingClientRect() : null;
 
-        // Submit button not found, but text is inserted - trigger Enter key
-        editor.dispatchEvent(new KeyboardEvent("keydown", { bubbles:true, key:"Enter", code:"Enter" }));
-        editor.dispatchEvent(new KeyboardEvent("keyup", { bubbles:true, key:"Enter", code:"Enter" }));
-        
-        return { ok:true, method:"enter_keypress" };
-    })()`;
+        return {
+            ok: true,
+            editorText: __cr.textOf(editor),
+            sendButton: sendRect ? {
+                x: sendRect.left + (sendRect.width / 2),
+                y: sendRect.top + (sendRect.height / 2)
+            } : null
+        };
+    `, {
+        accept: (value) => value && typeof value === 'object'
+    });
 
-    for (const ctx of cdp.contexts) {
-        try {
-            const result = await cdp.call("Runtime.evaluate", {
-                expression: EXPRESSION,
-                returnByValue: true,
-                awaitPromise: true,
-                contextId: ctx.id
-            });
-
-            if (result.result && result.result.value) {
-                return result.result.value;
-            }
-        } catch (e) { }
+    if (!prepared?.ok) {
+        return prepared || { ok: false, reason: 'prepare_failed' };
     }
 
-    return { ok: false, reason: "no_context" };
+    try {
+        await cdp.call('Input.dispatchKeyEvent', {
+            type: 'keyDown',
+            key: 'Enter',
+            code: 'Enter',
+            windowsVirtualKeyCode: 13,
+            nativeVirtualKeyCode: 13
+        });
+        await cdp.call('Input.dispatchKeyEvent', {
+            type: 'char',
+            key: '\r',
+            code: 'Enter',
+            text: '\r',
+            unmodifiedText: '\r',
+            windowsVirtualKeyCode: 13,
+            nativeVirtualKeyCode: 13
+        });
+        await cdp.call('Input.dispatchKeyEvent', {
+            type: 'keyUp',
+            key: 'Enter',
+            code: 'Enter',
+            windowsVirtualKeyCode: 13,
+            nativeVirtualKeyCode: 13
+        });
+    } catch (error) {
+        console.warn('CDP Enter dispatch failed, falling back to DOM click only:', error.message);
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    let finalState = await evaluateCursor(cdp, `
+        const editor = __cr.findEditor();
+        const sendButton = __cr.findSendButton();
+        const sendRect = sendButton ? sendButton.getBoundingClientRect() : null;
+        return {
+            editorTextAfter: editor ? __cr.textOf(editor) : '',
+            hasMessagesAfter: __cr.collectMessageNodes().length > 0,
+            busyAfter: __cr.isBusy(),
+            sendButton: sendRect ? {
+                x: sendRect.left + (sendRect.width / 2),
+                y: sendRect.top + (sendRect.height / 2)
+            } : null
+        };
+    `, {
+        accept: (value) => value && typeof value === 'object'
+    });
+
+    let method = 'cdp_enter';
+
+    if (finalState?.editorTextAfter && finalState.sendButton) {
+        try {
+            await cdp.call('Input.dispatchMouseEvent', {
+                type: 'mouseMoved',
+                x: finalState.sendButton.x,
+                y: finalState.sendButton.y
+            });
+            await cdp.call('Input.dispatchMouseEvent', {
+                type: 'mousePressed',
+                x: finalState.sendButton.x,
+                y: finalState.sendButton.y,
+                button: 'left',
+                clickCount: 1
+            });
+            await cdp.call('Input.dispatchMouseEvent', {
+                type: 'mouseReleased',
+                x: finalState.sendButton.x,
+                y: finalState.sendButton.y,
+                button: 'left',
+                clickCount: 1
+            });
+            method = 'cdp_enter_then_mouse_send';
+            await new Promise(resolve => setTimeout(resolve, 250));
+            finalState = await evaluateCursor(cdp, `
+                const editor = __cr.findEditor();
+                return {
+                    editorTextAfter: editor ? __cr.textOf(editor) : '',
+                    hasMessagesAfter: __cr.collectMessageNodes().length > 0,
+                    busyAfter: __cr.isBusy()
+                };
+            `, {
+                accept: (value) => value && typeof value === 'object'
+            });
+        } catch (error) {
+            console.warn('CDP mouse send fallback failed:', error.message);
+        }
+    }
+
+    return {
+        ok: !finalState?.editorTextAfter,
+        method,
+        editorTextAfter: finalState?.editorTextAfter || '',
+        hasMessagesAfter: !!finalState?.hasMessagesAfter,
+        busyAfter: !!finalState?.busyAfter
+    };
 }
 
 // Inject file into Cursor via CDP file chooser
@@ -1034,78 +1389,27 @@ async function injectFile(cdp, filePath) {
 
 // Click the context/media "+" button in IDE (NOT the "new conversation" + button)
 async function clickContextPlusButton(cdp) {
-    const EXP = `(async () => {
-        try {
-            // Strategy 1: Look for the add-context button (usually a + or paperclip near input area)
-            // In cursor/Windsurf, this is typically the "Add context" button at the bottom
-            const allButtons = Array.from(document.querySelectorAll('button, [role="button"]'));
-            
-            // Filter for plus/attach buttons near the bottom input area
-            const inputArea = document.querySelector('[contenteditable="true"]');
-            if (!inputArea) return { success: false, error: 'No editor found' };
-            
-            const inputRect = inputArea.getBoundingClientRect();
-            
-            // Find buttons near the input area that have plus/attach icons
-            const candidates = allButtons.filter(btn => {
-                if (btn.offsetParent === null) return false;
-                const rect = btn.getBoundingClientRect();
-                // Must be near the input area (within 100px vertically)
-                if (Math.abs(rect.top - inputRect.top) > 100 && Math.abs(rect.bottom - inputRect.bottom) > 100) return false;
-                
-                // Check for plus icon (lucide-plus) or attach/paperclip icon
-                const svg = btn.querySelector('svg');
-                if (!svg) return false;
-                const cls = (svg.getAttribute('class') || '').toLowerCase();
-                const label = (btn.getAttribute('aria-label') || '').toLowerCase();
-                const title = (btn.getAttribute('title') || '').toLowerCase();
-                
-                return cls.includes('plus') || cls.includes('paperclip') || cls.includes('attach') ||
-                       label.includes('context') || label.includes('attach') || label.includes('add') ||
-                       title.includes('context') || title.includes('attach') || title.includes('add file');
-            });
-            
-            if (candidates.length > 0) {
-                candidates[0].click();
-                return { success: true, method: 'context_plus_button', count: candidates.length };
-            }
-            
-            // Strategy 2: Look for any file input type and click its label/trigger
-            const fileInputs = Array.from(document.querySelectorAll('input[type="file"]'));
-            if (fileInputs.length > 0) {
-                fileInputs[0].click();
-                return { success: true, method: 'file_input_direct' };
-            }
-            
-            // Strategy 3: Find buttons with data-tooltip containing "context" or "attach"
-            const tooltipBtn = allButtons.find(btn => {
-                const tooltipId = btn.getAttribute('data-tooltip-id') || '';
-                return tooltipId.includes('context') || tooltipId.includes('attach') || tooltipId.includes('media');
-            });
-            
-            if (tooltipBtn) {
-                tooltipBtn.click();
-                return { success: true, method: 'tooltip_button' };
-            }
+    return await evaluateCursor(cdp, `
+        const editor = __cr.findEditor();
+        if (!editor) return { success: false, error: 'editor_not_found' };
 
-            return { success: false, error: 'No context/attach button found' };
-        } catch (e) {
-            return { success: false, error: e.toString() };
+        const attachButton = __cr.findAttachButton();
+        if (!attachButton) {
+            return { success: false, error: 'attach_button_not_found' };
         }
-    })()`;
 
-    for (const ctx of cdp.contexts) {
-        try {
-            const res = await cdp.call("Runtime.evaluate", {
-                expression: EXP,
-                returnByValue: true,
-                awaitPromise: true,
-                contextId: ctx.id
-            });
-            if (res.result?.value?.success) return res.result.value;
-        } catch (e) { }
-    }
-    return { success: false, error: 'No matching context' };
+        __cr.click(attachButton);
+        await new Promise(r => setTimeout(r, 150));
+
+        return {
+            success: true,
+            method: 'attach_button',
+            ariaLabel: attachButton.getAttribute('aria-label') || '',
+            title: attachButton.getAttribute('title') || ''
+        };
+    `, {
+        accept: (value) => value && typeof value === 'object'
+    });
 }
 
 // Fallback: inject file via DOM file input
@@ -1150,757 +1454,376 @@ async function injectFileViaInput(cdp, filePath) {
 
 // Set functionality mode (Fast vs Planning)
 async function setMode(cdp, mode) {
-    if (!['Fast', 'Planning'].includes(mode)) return { error: 'Invalid mode' };
+    const targetMode = String(mode || '').trim();
+    if (!targetMode) return { error: 'Invalid mode' };
 
-    const EXP = `(async () => {
-        try {
-            // STRATEGY: Find the element that IS the current mode indicator.
-            // It will have text 'Fast' or 'Planning'.
-            // It might not be a <button>, could be a <div> with cursor-pointer.
-            
-            // 1. Get all elements with text 'Fast' or 'Planning'
-            const allEls = Array.from(document.querySelectorAll('*'));
-            const candidates = allEls.filter(el => {
-                // Must have single text node child to avoid parents
-                if (el.children.length > 0) return false;
-                const txt = el.textContent.trim();
-                return txt === 'Fast' || txt === 'Planning';
-            });
+    return await evaluateCursor(cdp, `
+        const requestedMode = ${JSON.stringify(targetMode)};
+        const modeButton = __cr.findModeButton();
+        if (!modeButton) return { error: 'mode_button_not_found' };
 
-            // 2. Find the one that looks interactive (cursor-pointer)
-            // Traverse up from text node to find clickable container
-            let modeBtn = null;
-            
-            for (const el of candidates) {
-                let current = el;
-                // Go up max 4 levels
-                for (let i = 0; i < 4; i++) {
-                    if (!current) break;
-                    const style = window.getComputedStyle(current);
-                    if (style.cursor === 'pointer' || current.tagName === 'BUTTON') {
-                        modeBtn = current;
-                        break;
-                    }
-                    current = current.parentElement;
-                }
-                if (modeBtn) break;
-            }
-
-            if (!modeBtn) return { error: 'Mode indicator/button not found' };
-
-            // Check if already set
-            if (modeBtn.innerText.includes('${mode}')) return { success: true, alreadySet: true };
-
-            // 3. Click to open menu
-            modeBtn.click();
-            await new Promise(r => setTimeout(r, 600));
-
-            // 4. Find the dialog
-            let visibleDialog = Array.from(document.querySelectorAll('[role="dialog"]'))
-                                    .find(d => d.offsetHeight > 0 && d.innerText.includes('${mode}'));
-            
-            // Fallback: Just look for any new visible container if role=dialog is missing
-            if (!visibleDialog) {
-                // Maybe it's not role=dialog? Look for a popover-like div
-                 visibleDialog = Array.from(document.querySelectorAll('div'))
-                    .find(d => {
-                        const style = window.getComputedStyle(d);
-                        return d.offsetHeight > 0 && 
-                               (style.position === 'absolute' || style.position === 'fixed') && 
-                               d.innerText.includes('${mode}') &&
-                               !d.innerText.includes('Files With Changes'); // Anti-context menu
-                    });
-            }
-
-            if (!visibleDialog) return { error: 'Dropdown not opened or options not visible' };
-
-            // 5. Click the option
-            const allDialogEls = Array.from(visibleDialog.querySelectorAll('*'));
-            const target = allDialogEls.find(el => 
-                el.children.length === 0 && el.textContent.trim() === '${mode}'
-            );
-
-            if (target) {
-                target.click();
-                await new Promise(r => setTimeout(r, 200));
-                return { success: true };
-            }
-            
-            return { error: 'Mode option text not found in dialog. Dialog text: ' + visibleDialog.innerText.substring(0, 50) };
-
-        } catch(err) {
-            return { error: 'JS Error: ' + err.toString() };
+        const currentMode = __cr.getModeText();
+        if (currentMode && currentMode.toLowerCase() === requestedMode.toLowerCase()) {
+            return { success: true, alreadySet: true, currentMode };
         }
-    })()`;
 
-    for (const ctx of cdp.contexts) {
-        try {
-            const res = await cdp.call("Runtime.evaluate", {
-                expression: EXP,
-                returnByValue: true,
-                awaitPromise: true,
-                contextId: ctx.id
-            });
-            if (res.result?.value) return res.result.value;
-        } catch (e) { }
-    }
-    return { error: 'Context failed' };
+        __cr.click(modeButton);
+        await new Promise(r => setTimeout(r, 250));
+        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+        let menus = __cr.findMenuContainers();
+        const matchingMenus = menus.filter(menu => __cr.textOf(menu).toLowerCase().includes(requestedMode.toLowerCase()));
+        if (matchingMenus.length) menus = matchingMenus;
+
+        const option = __cr.findDropdownMenuItem(requestedMode, menus);
+        const available = __cr.getMenuItemTexts(menus).slice(0, 30);
+
+        if (!option) {
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+            document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', bubbles: true }));
+            return { error: 'mode_option_not_found', currentMode, available };
+        }
+
+        __cr.click(option);
+        await new Promise(r => setTimeout(r, 250));
+
+        return {
+            success: true,
+            currentMode: __cr.getModeText() || requestedMode,
+            available
+        };
+    `, {
+        accept: (value) => value && typeof value === 'object'
+    });
 }
 
 // Stop Generation
 async function stopGeneration(cdp) {
-    const EXP = `(async () => {
-        // Look for the cancel button
-        const cancel = document.querySelector('[data-tooltip-id="input-send-button-cancel-tooltip"]');
-        if (cancel && cancel.offsetParent !== null) {
-            cancel.click();
-            return { success: true };
-        }
-        
-        // Fallback: Look for a square icon in the send button area
-        const stopBtn = document.querySelector('button svg.lucide-square')?.closest('button');
-        if (stopBtn && stopBtn.offsetParent !== null) {
-            stopBtn.click();
-            return { success: true, method: 'fallback_square' };
-        }
+    return await evaluateCursor(cdp, `
+        if (!__cr.isBusy()) return { error: 'No active generation found to stop', status: __cr.getComposerStatus() || 'idle' };
 
-        return { error: 'No active generation found to stop' };
-    })()`;
-
-    for (const ctx of cdp.contexts) {
-        try {
-            const res = await cdp.call("Runtime.evaluate", {
-                expression: EXP,
-                returnByValue: true,
-                awaitPromise: true,
-                contextId: ctx.id
-            });
-            if (res.result?.value) return res.result.value;
-        } catch (e) { }
-    }
-    return { error: 'Context failed' };
+        const stopButton = __cr.findStopButton();
+        if (!stopButton) return { error: 'No active generation found to stop', status: __cr.getComposerStatus() || 'unknown' };
+        __cr.click(stopButton);
+        await new Promise(r => setTimeout(r, 300));
+        return { success: true, status: __cr.getComposerStatus() || 'unknown' };
+    `, {
+        accept: (value) => value && typeof value === 'object'
+    });
 }
 
 // Click Element (Remote)
 async function clickElement(cdp, { selector, index, textContent }) {
+    const safeSelector = JSON.stringify(selector || '*');
     const safeText = JSON.stringify(textContent || '');
+    const targetIndex = Number.isFinite(Number(index)) ? Number(index) : 0;
 
-    const EXP = `(async () => {
-        try {
-            // Priority: Search inside the chat container first for better accuracy
-            const root = document.getElementById('conversation') || document.getElementById('chat') || document.getElementById('cascade') || document;
-            
-            // Strategy: Find all elements matching the selector
-            let elements = Array.from(root.querySelectorAll('${selector}'));
-            
-            const filterText = ${safeText};
-            if (filterText) {
-                elements = elements.filter(el => {
-                    const txt = (el.innerText || el.textContent || '').trim();
-                    const firstLine = txt.split('\\n')[0].trim();
-                    // Match if first line matches (thought blocks) or if it contains the label (buttons)
-                    return firstLine === filterText || txt.includes(filterText);
-                });
-                
-                // CRITICAL: If elements are nested (e.g. <div><span>Text</span></div>), 
-                // both will match. We only want the most specific (inner-most) one.
-                elements = elements.filter(el => {
-                    return !elements.some(other => other !== el && el.contains(other));
-                });
-            }
+    return await evaluateCursor(cdp, `
+        const root = __cr.findPanel() || document;
+        const query = ${safeSelector};
+        const filterText = ${safeText};
+        let elements = Array.from(root.querySelectorAll(query)).filter(__cr.isVisible);
 
-            const target = elements[${index}];
-
-            if (target) {
-                // Focus and Click
-                if (target.focus) target.focus();
-                target.click();
-                return { success: true, found: elements.length, indexUsed: ${index} };
-            }
-            
-            return { error: 'Element not found at index ' + ${index} + ' among ' + elements.length + ' matches' };
-        } catch(e) {
-            return { error: e.toString() };
-        }
-    })()`;
-
-    for (const ctx of cdp.contexts) {
-        try {
-            const res = await cdp.call("Runtime.evaluate", {
-                expression: EXP,
-                returnByValue: true,
-                awaitPromise: true,
-                contextId: ctx.id
+        if (filterText) {
+            elements = elements.filter(el => {
+                const text = __cr.textOf(el);
+                const firstLine = text.split('\\n')[0].trim();
+                return firstLine === filterText || text.includes(filterText);
             });
-            if (res.result?.value?.success) return res.result.value;
-            // If we found it but click didn't return success (unlikely with this script), continue to next context
-        } catch (e) { }
-    }
-    return { error: 'Click failed in all contexts or element not found at index' };
+
+            elements = elements.filter(el => !elements.some(other => other !== el && el.contains(other)));
+        }
+
+        const target = elements[${targetIndex}] || null;
+        if (!target) {
+            return {
+                error: 'Element not found',
+                found: elements.length,
+                indexUsed: ${targetIndex}
+            };
+        }
+
+        try { target.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (e) { /* ignore */ }
+        if (typeof target.focus === 'function') {
+            try { target.focus({ preventScroll: true }); } catch (e) { /* ignore */ }
+        }
+        __cr.click(target);
+        await new Promise(r => setTimeout(r, 150));
+
+        return {
+            success: true,
+            found: elements.length,
+            indexUsed: ${targetIndex},
+            text: __cr.textOf(target).slice(0, 120)
+        };
+    `, {
+        accept: (value) => value && typeof value === 'object'
+    });
 }
 
 // Remote scroll - sync phone scroll to desktop
 async function remoteScroll(cdp, { scrollTop, scrollPercent }) {
-    // Try to scroll the chat container in cursor
-    const EXPRESSION = `(async () => {
-        try {
-            // Find the main scrollable chat container
-            const scrollables = [...document.querySelectorAll('#conversation [class*="scroll"], #chat [class*="scroll"], #cascade [class*="scroll"], #conversation [style*="overflow"], #chat [style*="overflow"], #cascade [style*="overflow"]')]
-                .filter(el => el.scrollHeight > el.clientHeight);
-            
-            // Also check for the main chat area
-            const chatArea = document.querySelector('#conversation .overflow-y-auto, #chat .overflow-y-auto, #cascade .overflow-y-auto, #conversation [data-scroll-area], #chat [data-scroll-area], #cascade [data-scroll-area]');
-            if (chatArea) scrollables.unshift(chatArea);
-            
-            if (scrollables.length === 0) {
-                // Fallback: scroll the main container element
-                const cascade = document.getElementById('conversation') || document.getElementById('chat') || document.getElementById('cascade');
-                if (cascade && cascade.scrollHeight > cascade.clientHeight) {
-                    scrollables.push(cascade);
-                }
-            }
-            
-            if (scrollables.length === 0) return { error: 'No scrollable element found' };
-            
-            const target = scrollables[0];
-            
-            // Use percentage-based scrolling for better sync
-            if (${scrollPercent} !== undefined) {
-                const maxScroll = target.scrollHeight - target.clientHeight;
-                target.scrollTop = maxScroll * ${scrollPercent};
-            } else {
-                target.scrollTop = ${scrollTop || 0};
-            }
-            
-            return { success: true, scrolled: target.scrollTop };
-        } catch(e) {
-            return { error: e.toString() };
-        }
-    })()`;
+    const numericScrollTop = Number.isFinite(Number(scrollTop)) ? Number(scrollTop) : 0;
+    const normalizedPercent = Number.isFinite(Number(scrollPercent)) ? Math.min(1, Math.max(0, Number(scrollPercent))) : null;
 
-    for (const ctx of cdp.contexts) {
-        try {
-            const res = await cdp.call("Runtime.evaluate", {
-                expression: EXPRESSION,
-                returnByValue: true,
-                awaitPromise: true,
-                contextId: ctx.id
-            });
-            if (res.result?.value?.success) return res.result.value;
-        } catch (e) { }
-    }
-    return { error: 'Scroll failed in all contexts' };
+    return await evaluateCursor(cdp, `
+        const target = __cr.findPanelScrollRoot();
+        if (!target) return { error: 'No scrollable element found' };
+
+        const maxScroll = Math.max(target.scrollHeight - target.clientHeight, 0);
+        if (${normalizedPercent === null ? 'null' : normalizedPercent} !== null) {
+            target.scrollTop = maxScroll * ${normalizedPercent === null ? 0 : normalizedPercent};
+        } else {
+            target.scrollTop = Math.max(0, Math.min(${numericScrollTop}, maxScroll));
+        }
+
+        target.dispatchEvent(new Event('scroll', { bubbles: true }));
+        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+        return {
+            success: true,
+            scrollTop: target.scrollTop,
+            maxScroll,
+            scrollPercent: maxScroll > 0 ? target.scrollTop / maxScroll : 0
+        };
+    `, {
+        accept: (value) => value && typeof value === 'object'
+    });
 }
 
 // Set AI Model
 async function setModel(cdp, modelName) {
-    const EXP = `(async () => {
-        try {
-            // STRATEGY: Multi-layered approach to find and click the model selector
-            const KNOWN_KEYWORDS = ["Gemini", "Claude", "GPT", "Model"];
-            
-            let modelBtn = null;
-            
-            // Strategy 1: Look for data-tooltip-id patterns (most reliable)
-            modelBtn = document.querySelector('[data-tooltip-id*="model"], [data-tooltip-id*="provider"]');
-            
-            // Strategy 2: Look for buttons/elements containing model keywords with SVG icons
-            if (!modelBtn) {
-                const candidates = Array.from(document.querySelectorAll('button, [role="button"], div, span'))
-                    .filter(el => {
-                        const txt = el.innerText?.trim() || '';
-                        return KNOWN_KEYWORDS.some(k => txt.includes(k)) && el.offsetParent !== null;
-                    });
+    const targetModel = String(modelName || '').trim();
+    if (!targetModel) return { error: 'Invalid model' };
 
-                // Find the best one (has chevron icon or cursor pointer)
-                modelBtn = candidates.find(el => {
-                    const style = window.getComputedStyle(el);
-                    const hasSvg = el.querySelector('svg.lucide-chevron-up') || 
-                                   el.querySelector('svg.lucide-chevron-down') || 
-                                   el.querySelector('svg[class*="chevron"]') ||
-                                   el.querySelector('svg');
-                    return (style.cursor === 'pointer' || el.tagName === 'BUTTON') && hasSvg;
-                }) || candidates[0];
-            }
-            
-            // Strategy 3: Traverse from text nodes up to clickable parents
-            if (!modelBtn) {
-                const allEls = Array.from(document.querySelectorAll('*'));
-                const textNodes = allEls.filter(el => {
-                    if (el.children.length > 0) return false;
-                    const txt = el.textContent;
-                    return KNOWN_KEYWORDS.some(k => txt.includes(k));
-                });
+    return await evaluateCursor(cdp, `
+        const requestedModel = ${JSON.stringify(targetModel)};
+        const modelButton = __cr.findModelButton();
+        if (!modelButton) return { error: 'model_button_not_found' };
 
-                for (const el of textNodes) {
-                    let current = el;
-                    for (let i = 0; i < 5; i++) {
-                        if (!current) break;
-                        if (current.tagName === 'BUTTON' || window.getComputedStyle(current).cursor === 'pointer') {
-                            modelBtn = current;
-                            break;
-                        }
-                        current = current.parentElement;
-                    }
-                    if (modelBtn) break;
-                }
-            }
-
-            if (!modelBtn) return { error: 'Model selector button not found' };
-
-            // Click to open menu
-            modelBtn.click();
-            await new Promise(r => setTimeout(r, 600));
-
-            // Find the dialog/dropdown - search globally (React portals render at body level)
-            let visibleDialog = null;
-            
-            // Try specific dialog patterns first
-            const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [role="listbox"], [role="menu"], [data-radix-popper-content-wrapper]'));
-            visibleDialog = dialogs.find(d => d.offsetHeight > 0 && d.innerText?.includes('${modelName}'));
-            
-            // Fallback: look for positioned divs
-            if (!visibleDialog) {
-                visibleDialog = Array.from(document.querySelectorAll('div'))
-                    .find(d => {
-                        const style = window.getComputedStyle(d);
-                        return d.offsetHeight > 0 && 
-                               (style.position === 'absolute' || style.position === 'fixed') && 
-                               d.innerText?.includes('${modelName}') && 
-                               !d.innerText?.includes('Files With Changes');
-                    });
-            }
-
-            if (!visibleDialog) {
-                // Blind search across entire document as last resort
-                const allElements = Array.from(document.querySelectorAll('[role="menuitem"], [role="option"]'));
-                const target = allElements.find(el => 
-                    el.offsetParent !== null && 
-                    (el.innerText?.trim() === '${modelName}' || el.innerText?.includes('${modelName}'))
-                );
-                if (target) {
-                    target.click();
-                    return { success: true, method: 'blind_search' };
-                }
-                return { error: 'Model list not opened' };
-            }
-
-            // Select specific model inside the dialog
-            const allDialogEls = Array.from(visibleDialog.querySelectorAll('*'));
-            const validEls = allDialogEls.filter(el => el.children.length === 0 && el.textContent?.trim().length > 0);
-            
-            // A. Exact Match (Best)
-            let target = validEls.find(el => el.textContent.trim() === '${modelName}');
-            
-            // B. Page contains Model
-            if (!target) {
-                target = validEls.find(el => el.textContent.includes('${modelName}'));
-            }
-
-            // C. Closest partial match
-            if (!target) {
-                const partialMatches = validEls.filter(el => '${modelName}'.includes(el.textContent.trim()));
-                if (partialMatches.length > 0) {
-                    partialMatches.sort((a, b) => b.textContent.trim().length - a.textContent.trim().length);
-                    target = partialMatches[0];
-                }
-            }
-
-            if (target) {
-                target.scrollIntoView({block: 'center'});
-                target.click();
-                await new Promise(r => setTimeout(r, 200));
-                return { success: true };
-            }
-
-            return { error: 'Model "${modelName}" not found in list. Visible: ' + visibleDialog.innerText.substring(0, 100) };
-        } catch(err) {
-            return { error: 'JS Error: ' + err.toString() };
+        const currentModel = __cr.getModelText();
+        if (currentModel && currentModel.toLowerCase() === requestedModel.toLowerCase()) {
+            return { success: true, alreadySet: true, currentModel };
         }
-    })()`;
 
-    for (const ctx of cdp.contexts) {
-        try {
-            const res = await cdp.call("Runtime.evaluate", {
-                expression: EXP,
-                returnByValue: true,
-                awaitPromise: true,
-                contextId: ctx.id
-            });
-            if (res.result?.value) return res.result.value;
-        } catch (e) { }
-    }
-    return { error: 'Context failed' };
+        __cr.click(modelButton);
+        await new Promise(r => setTimeout(r, 250));
+        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+        let menus = __cr.findMenuContainers();
+        const matchingMenus = menus.filter(menu => __cr.textOf(menu).toLowerCase().includes(requestedModel.toLowerCase()));
+        if (matchingMenus.length) menus = matchingMenus;
+
+        const option = __cr.findDropdownMenuItem(requestedModel, menus);
+        const available = __cr.getMenuItemTexts(menus).slice(0, 40);
+
+        if (!option) {
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+            document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', bubbles: true }));
+            return { error: 'model_option_not_found', currentModel, available };
+        }
+
+        __cr.click(option);
+        await new Promise(r => setTimeout(r, 250));
+
+        return {
+            success: true,
+            currentModel: __cr.getModelText() || requestedModel,
+            available
+        };
+    `, {
+        accept: (value) => value && typeof value === 'object'
+    });
+}
+
+async function getDropdownOptions(cdp, kind) {
+    const normalizedKind = kind === 'model' ? 'model' : 'mode';
+    return await evaluateCursor(cdp, `
+        const kind = ${JSON.stringify(normalizedKind)};
+        const button = kind === 'model' ? __cr.findModelButton() : __cr.findModeButton();
+        if (!button) return { error: kind + '_button_not_found', options: [] };
+
+        __cr.click(button);
+        await new Promise(r => setTimeout(r, 250));
+        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+        const current = kind === 'model' ? (__cr.getModelText() || 'Unknown') : (__cr.getModeText() || 'Unknown');
+        let menus = __cr.findMenuContainers();
+        const matchingMenus = menus.filter(menu => __cr.textOf(menu).toLowerCase().includes(current.toLowerCase()));
+        if (matchingMenus.length) menus = matchingMenus;
+
+        const options = __cr.getMenuItemTexts(menus)
+            .filter(text => text.length <= 100)
+            .slice(0, 50);
+        const normalizedOptions = options.length
+            ? options
+            : (current && current !== 'Unknown' ? [current] : []);
+
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+        document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', bubbles: true }));
+
+        return { success: true, kind, current, options: normalizedOptions };
+    `, {
+        accept: (value) => value && typeof value === 'object'
+    });
 }
 
 // Start New Chat - Click the + button at the TOP of the chat window (NOT the context/media + button)
 async function startNewChat(cdp) {
-    const EXP = `(async () => {
-        try {
-            // Priority 1: Exact selector from user (data-tooltip-id="new-conversation-tooltip")
-            const exactBtn = document.querySelector('[data-tooltip-id="new-conversation-tooltip"]');
-            if (exactBtn) {
-                exactBtn.click();
-                return { success: true, method: 'data-tooltip-id' };
-            }
+    return await evaluateCursor(cdp, `
+        const newChatButton = __cr.findNewChatButton();
+        if (!newChatButton) return { error: 'New chat button not found' };
 
-            // Fallback: Use previous heuristics
-            const allButtons = Array.from(document.querySelectorAll('button, [role="button"], a'));
-            
-            // Find all buttons with plus icons
-            const plusButtons = allButtons.filter(btn => {
-                if (btn.offsetParent === null) return false; // Skip hidden
-                const hasPlusIcon = btn.querySelector('svg.lucide-plus') || 
-                                   btn.querySelector('svg.lucide-square-plus') ||
-                                   btn.querySelector('svg[class*="plus"]');
-                return hasPlusIcon;
-            });
-            
-            // Filter only top buttons (toolbar area)
-            const topPlusButtons = plusButtons.filter(btn => {
-                const rect = btn.getBoundingClientRect();
-                return rect.top < 200;
-            });
+        __cr.click(newChatButton);
+        await new Promise(r => setTimeout(r, 250));
 
-            if (topPlusButtons.length > 0) {
-                 topPlusButtons.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
-                 topPlusButtons[0].click();
-                 return { success: true, method: 'filtered_top_plus', count: topPlusButtons.length };
-            }
-            
-            // Fallback: aria-label
-             const newChatBtn = allButtons.find(btn => {
-                const ariaLabel = btn.getAttribute('aria-label')?.toLowerCase() || '';
-                const title = btn.getAttribute('title')?.toLowerCase() || '';
-                return (ariaLabel.includes('new') || title.includes('new')) && btn.offsetParent !== null;
-            });
-            
-            if (newChatBtn) {
-                newChatBtn.click();
-                return { success: true, method: 'aria_label_new' };
-            }
-            
-            return { error: 'New chat button not found' };
-        } catch(e) {
-            return { error: e.toString() };
-        }
-    })()`;
-
-    for (const ctx of cdp.contexts) {
-        try {
-            const res = await cdp.call("Runtime.evaluate", {
-                expression: EXP,
-                returnByValue: true,
-                awaitPromise: true,
-                contextId: ctx.id
-            });
-            if (res.result?.value?.success) return res.result.value;
-        } catch (e) { }
-    }
-    return { error: 'Context failed' };
+        const editor = __cr.findEditor();
+        return {
+            success: true,
+            method: 'new_chat_button',
+            editorFound: !!editor,
+            editorText: editor ? __cr.textOf(editor) : ''
+        };
+    `, {
+        accept: (value) => value && typeof value === 'object'
+    });
 }
 // Get Chat History - Click history button and scrape conversations
 async function getChatHistory(cdp) {
-    const EXP = `(async () => {
-        try {
-            const chats = [];
-            const seenTitles = new Set();
+    const opener = await evaluateCursor(cdp, `
+        const historyButton = __cr.findHistoryButton();
+        if (!historyButton) return { error: 'History button not found', chats: [] };
+        const rect = historyButton.getBoundingClientRect();
+        return {
+            success: true,
+            button: {
+                x: rect.left + (rect.width / 2),
+                y: rect.top + (rect.height / 2)
+            }
+        };
+    `, {
+        accept: (value) => value && typeof value === 'object'
+    });
 
-            // Priority 1: Look for tooltip ID pattern (history/past/recent)
-            let historyBtn = document.querySelector('[data-tooltip-id*="history"], [data-tooltip-id*="past"], [data-tooltip-id*="recent"], [data-tooltip-id*="conversation-history"]');
-            
-            // Priority 2: Look for button ADJACENT to the new chat button
-            if (!historyBtn) {
-                const newChatBtn = document.querySelector('[data-tooltip-id="new-conversation-tooltip"]');
-                if (newChatBtn) {
-                    const parent = newChatBtn.parentElement;
-                    if (parent) {
-                        const siblings = Array.from(parent.children).filter(el => el !== newChatBtn);
-                        historyBtn = siblings.find(el => el.tagName === 'A' || el.tagName === 'BUTTON' || el.getAttribute('role') === 'button');
-                    }
-                }
-            }
-
-            // Fallback: Use previous heuristics (icon/aria-label)
-            if (!historyBtn) {
-                const allButtons = Array.from(document.querySelectorAll('button, [role="button"], a[data-tooltip-id]'));
-                for (const btn of allButtons) {
-                    if (btn.offsetParent === null) continue;
-                    const hasHistoryIcon = btn.querySelector('svg.lucide-clock') ||
-                                           btn.querySelector('svg.lucide-history') ||
-                                           btn.querySelector('svg.lucide-folder') ||
-                                           btn.querySelector('svg[class*="clock"]') ||
-                                           btn.querySelector('svg[class*="history"]');
-                    if (hasHistoryIcon) {
-                        historyBtn = btn;
-                        break;
-                    }
-                }
-            }
-            
-            if (!historyBtn) {
-                return { error: 'History button not found', chats: [] };
-            }
-
-            // Click and Wait
-            historyBtn.click();
-            await new Promise(r => setTimeout(r, 2000));
-            
-            // Find the side panel
-            let panel = null;
-            let inputsFoundDebug = [];
-            
-            // Strategy 1: The search input has specific placeholder
-            let searchInput = null;
-            const inputs = Array.from(document.querySelectorAll('input'));
-            searchInput = inputs.find(i => {
-                const ph = (i.placeholder || '').toLowerCase();
-                return ph.includes('select') || ph.includes('conversation');
-            });
-            
-            // Strategy 2: Look for any text input that looks like a search bar (based on user snippet classes)
-            if (!searchInput) {
-                const allInputs = Array.from(document.querySelectorAll('input[type="text"]'));
-                inputsFoundDebug = allInputs.map(i => 'ph:' + i.placeholder + ', cls:' + i.className);
-                
-                searchInput = allInputs.find(i => 
-                    i.offsetParent !== null && 
-                    (i.className.includes('w-full') || i.classList.contains('w-full'))
-                );
-            }
-            
-            // Strategy 3: Find known text in the panel (Anchor Text Strategy)
-            let anchorElement = null;
-            if (!searchInput) {
-                 const allSpans = Array.from(document.querySelectorAll('span, div, p'));
-                 anchorElement = allSpans.find(s => {
-                     const t = (s.innerText || '').trim();
-                     return t === 'Current' || t === 'Refining Chat History Scraper'; // specific known title
-                 });
-            }
-
-            const startElement = searchInput || anchorElement;
-
-            if (startElement) {
-                // Walk up to find the panel container
-                let container = startElement;
-                for (let i = 0; i < 15; i++) { 
-                    if (!container.parentElement) break;
-                    container = container.parentElement;
-                    const rect = container.getBoundingClientRect();
-                    
-                    // Panel should have good dimensions
-                    // Relaxed constraints for mobile
-                    if (rect.width > 50 && rect.height > 100) {
-                        panel = container;
-                        
-                        // If it looks like a modal/popover (fixed or absolute pos), that's definitely it
-                        const style = window.getComputedStyle(container);
-                        if (style.position === 'fixed' || style.position === 'absolute' || style.zIndex > 10) {
-                            break;
-                        }
-                    }
-                }
-                
-                // Fallback if loop finishes without specific break
-                if (!panel && startElement) {
-                     // Just go up 4 levels
-                     let p = startElement;
-                     for(let k=0; k<4; k++) { if(p.parentElement) p = p.parentElement; }
-                     panel = p;
-                }
-            }
-            
-            const debugInfo = { 
-                panelFound: !!panel, 
-                panelWidth: panel?.offsetWidth || 0,
-                inputFound: !!searchInput,
-                anchorFound: !!anchorElement,
-                inputsDebug: inputsFoundDebug.slice(0, 5)
-            };
-            
-            if (panel) {
-                // Chat titles are in <span> elements
-                const spans = Array.from(panel.querySelectorAll('span'));
-                
-                // Section headers to skip
-                const SKIP_EXACT = new Set([
-                    'current', 'other conversations', 'now'
-                ]);
-                
-                for (const span of spans) {
-                    const text = span.textContent?.trim() || '';
-                    const lower = text.toLowerCase();
-                    
-                    // Skip empty or too short
-                    if (text.length < 3) continue;
-                    
-                    // Skip section headers
-                    if (SKIP_EXACT.has(lower)) continue;
-                    if (lower.startsWith('recent in ')) continue;
-                    if (lower.startsWith('show ') && lower.includes('more')) continue;
-                    
-                    // Skip timestamps
-                    if (lower.endsWith(' ago') || /^\\d+\\s*(sec|min|hr|day|wk|mo|yr)/i.test(lower)) continue;
-                    
-                    // Skip very long text (containers)
-                    if (text.length > 100) continue;
-                    
-                    // Skip duplicates
-                    if (seenTitles.has(text)) continue;
-                    
-                    seenTitles.add(text);
-                    chats.push({ title: text, date: 'Recent' });
-                    
-                    if (chats.length >= 50) break;
-                }
-            }
-            
-            // Note: Panel is left open on PC as requested ("launch history on pc")
-
-            return { success: true, chats: chats, debug: debugInfo };
-        } catch(e) {
-            return { error: e.toString(), chats: [] };
-        }
-    })()`;
-
-    let lastError = null;
-    for (const ctx of cdp.contexts) {
-        try {
-            const res = await cdp.call("Runtime.evaluate", {
-                expression: EXP,
-                returnByValue: true,
-                awaitPromise: true,
-                contextId: ctx.id
-            });
-            if (res.result?.value) return res.result.value;
-            // If result.value is null/undefined but no error thrown, check exceptionDetails
-            if (res.exceptionDetails) {
-                lastError = res.exceptionDetails.exception?.description || res.exceptionDetails.text;
-            }
-        } catch (e) {
-            lastError = e.message;
-        }
+    if (!opener?.success || !opener.button) {
+        return opener || { error: 'History button not found', chats: [] };
     }
-    return { error: 'Context failed: ' + (lastError || 'No contexts available'), chats: [] };
+
+    await clickAtPoint(cdp, opener.button.x, opener.button.y);
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    return await evaluateCursor(cdp, `
+        const menu = __cr.findHistoryMenu();
+        const chats = __cr.getHistoryItems().slice(0, 50).map(item => ({
+            title: item.title,
+            date: 'Recent'
+        }));
+
+        return {
+            success: true,
+            chats,
+            debug: {
+                menuFound: !!menu,
+                menuText: menu ? __cr.textOf(menu).slice(0, 200) : '',
+                itemCount: chats.length
+            }
+        };
+    `, {
+        accept: (value) => value && typeof value === 'object'
+    });
 }
 
 async function selectChat(cdp, chatTitle) {
-    const safeChatTitle = JSON.stringify(chatTitle);
+    const targetTitle = String(chatTitle || '').trim();
+    if (!targetTitle) return { error: 'Chat title required' };
 
-    const EXP = `(async () => {
-    try {
-        const targetTitle = ${safeChatTitle};
-
-        // First, we need to open the history panel
-        // Find the history button at the top (next to + button)
-        const allButtons = Array.from(document.querySelectorAll('button, [role="button"]'));
-
-        let historyBtn = null;
-
-        // Find by icon type
-        for (const btn of allButtons) {
-            if (btn.offsetParent === null) continue;
-            const hasHistoryIcon = btn.querySelector('svg.lucide-clock') ||
-                btn.querySelector('svg.lucide-history') ||
-                btn.querySelector('svg.lucide-folder') ||
-                btn.querySelector('svg.lucide-clock-rotate-left');
-            if (hasHistoryIcon) {
-                historyBtn = btn;
-                break;
-            }
+    const opener = await evaluateCursor(cdp, `
+        const desiredTitle = ${JSON.stringify(targetTitle)};
+        let menu = __cr.findHistoryMenu();
+        if (!menu) {
+            const historyButton = __cr.findHistoryButton();
+            if (!historyButton) return { error: 'History button not found' };
+            const rect = historyButton.getBoundingClientRect();
+            return {
+                success: true,
+                requiresOpen: true,
+                desiredTitle,
+                button: {
+                    x: rect.left + (rect.width / 2),
+                    y: rect.top + (rect.height / 2)
+                }
+            };
         }
 
-        // Fallback: Find by position (second button at top)
-        if (!historyBtn) {
-            const topButtons = allButtons.filter(btn => {
-                if (btn.offsetParent === null) return false;
-                const rect = btn.getBoundingClientRect();
-                return rect.top < 100 && rect.top > 0;
-            }).sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+        return { success: true, requiresOpen: false, desiredTitle };
+    `, {
+        accept: (value) => value && typeof value === 'object'
+    });
 
-            if (topButtons.length >= 2) {
-                historyBtn = topButtons[1];
-            }
-        }
+    if (!opener?.success) {
+        return opener || { error: 'History button not found' };
+    }
 
-        if (historyBtn) {
-            historyBtn.click();
-            await new Promise(r => setTimeout(r, 600));
-        }
+    if (opener.requiresOpen && opener.button) {
+        await clickAtPoint(cdp, opener.button.x, opener.button.y);
+        await new Promise(resolve => setTimeout(resolve, 500));
+    }
 
-        // Now find the chat by title in the opened panel
-        await new Promise(r => setTimeout(r, 200));
+    const selection = await evaluateCursor(cdp, `
+        const desiredTitle = ${JSON.stringify(targetTitle)};
+        const menu = __cr.findHistoryMenu();
+        if (!menu) return { error: 'History menu not found' };
 
-        const allElements = Array.from(document.querySelectorAll('*'));
-
-        // Find elements matching the title
-        const candidates = allElements.filter(el => {
-            if (el.offsetParent === null) return false;
-            const text = el.innerText?.trim();
-            return text && text.startsWith(targetTitle.substring(0, Math.min(30, targetTitle.length)));
+        let items = __cr.getMenuItems(menu);
+        const desiredLower = desiredTitle.toLowerCase();
+        items = items.filter(item => {
+            const titleLower = item.title.toLowerCase();
+            return titleLower === desiredLower ||
+                titleLower.includes(desiredLower) ||
+                desiredLower.includes(titleLower);
         });
 
-        // Find the most specific (deepest) visible element with the title
-        let target = null;
-        let maxDepth = -1;
+        const target = items
+            .sort((a, b) => {
+                const aExact = a.title.toLowerCase() === desiredLower ? 1 : 0;
+                const bExact = b.title.toLowerCase() === desiredLower ? 1 : 0;
+                if (bExact !== aExact) return bExact - aExact;
+                return b.title.length - a.title.length;
+            })[0];
 
-        for (const el of candidates) {
-            // Skip if it has too many children (likely a container)
-            if (el.children.length > 5) continue;
-
-            let depth = 0;
-            let parent = el;
-            while (parent) {
-                depth++;
-                parent = parent.parentElement;
-            }
-
-            if (depth > maxDepth) {
-                maxDepth = depth;
-                target = el;
-            }
+        if (!target) {
+            return {
+                error: 'Chat not found: ' + desiredTitle,
+                available: __cr.getHistoryItems().slice(0, 20).map(item => item.title)
+            };
         }
 
-        if (target) {
-            // Find clickable parent if needed
-            let clickable = target;
-            for (let i = 0; i < 5; i++) {
-                if (!clickable) break;
-                const style = window.getComputedStyle(clickable);
-                if (style.cursor === 'pointer' || clickable.tagName === 'BUTTON') {
-                    break;
-                }
-                clickable = clickable.parentElement;
+        const rect = target.element.getBoundingClientRect();
+        return {
+            success: true,
+            method: 'history_menu',
+            title: target.title,
+            target: {
+                x: rect.left + (rect.width / 2),
+                y: rect.top + (rect.height / 2)
             }
+        };
+    `, {
+        accept: (value) => value && typeof value === 'object'
+    });
 
-            if (clickable) {
-                clickable.click();
-                return { success: true, method: 'clickable_parent' };
-            }
-
-            target.click();
-            return { success: true, method: 'direct_click' };
-        }
-
-        return { error: 'Chat not found: ' + targetTitle };
-    } catch (e) {
-        return { error: e.toString() };
+    if (!selection?.success || !selection.target) {
+        return selection || { error: 'Chat not found: ' + targetTitle };
     }
-})()`;
 
-    for (const ctx of cdp.contexts) {
-        try {
-            const res = await cdp.call("Runtime.evaluate", {
-                expression: EXP,
-                returnByValue: true,
-                awaitPromise: true,
-                contextId: ctx.id
-            });
-            if (res.result?.value) return res.result.value;
-        } catch (e) { }
-    }
-    return { error: 'Context failed' };
+    await clickAtPoint(cdp, selection.target.x, selection.target.y);
+    await new Promise(resolve => setTimeout(resolve, 300));
+
+    return {
+        success: true,
+        method: selection.method,
+        title: selection.title
+    };
 }
 
 // Close History Panel (Escape)
@@ -1931,133 +1854,35 @@ async function closeHistory(cdp) {
 
 // Check if a chat is currently open (has cascade element)
 async function hasChatOpen(cdp) {
-    const EXP = `(() => {
-    const chatContainer = document.getElementById('conversation') || document.getElementById('chat') || document.getElementById('cascade');
-    const hasMessages = chatContainer && chatContainer.querySelectorAll('[class*="message"], [data-message]').length > 0;
-    return {
-        hasChat: !!chatContainer,
-        hasMessages: hasMessages,
-        editorFound: !!(chatContainer && chatContainer.querySelector('[data-lexical-editor="true"]'))
-    };
-})()`;
-
-    for (const ctx of cdp.contexts) {
-        try {
-            const res = await cdp.call("Runtime.evaluate", {
-                expression: EXP,
-                returnByValue: true,
-                contextId: ctx.id
-            });
-            if (res.result?.value) return res.result.value;
-        } catch (e) { }
-    }
-    return { hasChat: false, hasMessages: false, editorFound: false };
+    return await evaluateCursor(cdp, `
+        const panel = __cr.findPanel();
+        const editor = __cr.findEditor();
+        const messages = __cr.collectMessageNodes();
+        return {
+            hasChat: !!panel,
+            hasMessages: messages.length > 0,
+            editorFound: !!editor
+        };
+    `, {
+        accept: (value) => value && typeof value === 'object'
+    });
 }
 
 // Get App State (Mode & Model)
 async function getAppState(cdp) {
-    const EXP = `(async () => {
-    try {
-        const state = { mode: 'Unknown', model: 'Unknown' };
-
-        // 1. Get Mode (Fast/Planning)
-        // Strategy: Find the clickable mode button which contains either "Fast" or "Planning"
-        // It's usually a button or div with cursor:pointer containing the mode text
-        const allEls = Array.from(document.querySelectorAll('*'));
-
-        // Find elements that are likely mode buttons
-        for (const el of allEls) {
-            if (el.children.length > 0) continue;
-            const text = (el.innerText || '').trim();
-            if (text !== 'Fast' && text !== 'Planning') continue;
-
-            // Check if this or a parent is clickable (the actual mode selector)
-            let current = el;
-            for (let i = 0; i < 5; i++) {
-                if (!current) break;
-                const style = window.getComputedStyle(current);
-                if (style.cursor === 'pointer' || current.tagName === 'BUTTON') {
-                    state.mode = text;
-                    break;
-                }
-                current = current.parentElement;
-            }
-            if (state.mode !== 'Unknown') break;
-        }
-
-        // Fallback: Just look for visible text
-        if (state.mode === 'Unknown') {
-            const textNodes = allEls.filter(el => el.children.length === 0 && el.innerText);
-            if (textNodes.some(el => el.innerText.trim() === 'Planning')) state.mode = 'Planning';
-            else if (textNodes.some(el => el.innerText.trim() === 'Fast')) state.mode = 'Fast';
-        }
-
-        // 2. Get Model
-        // Strategy: Look for leaf text nodes containing a known model keyword
-        // BUT exclude status bar items (which contain "%" or "|" or "MB")
-        const KNOWN_MODELS = ["Gemini", "Claude", "GPT"];
-        const textNodes2 = allEls.filter(el => el.children.length === 0 && el.innerText);
-        
-        // Helper: check if text looks like a real model name (not a status bar snippet)
-        function isModelName(txt) {
-            if (!KNOWN_MODELS.some(k => txt.includes(k))) return false;
-            // Reject status bar patterns: "Claude 80%", "Flash 100% | Pro 100% | Claude 80%"
-            if (txt.includes('%') || txt.includes('|') || txt.includes('MB')) return false;
-            // Must look like a model name: "Claude Opus 4.6 (Thinking)", "Gemini 3.1 Pro (High)" etc.
-            // At minimum: keyword + version or qualifier
-            if (txt.length < 8 || txt.length > 60) return false;
-            return true;
-        }
-        
-        // First try: find inside a clickable parent (button, cursor:pointer)
-        let modelEl = textNodes2.find(el => {
-            const txt = el.innerText.trim();
-            if (!isModelName(txt)) return false;
-            // Must be in a clickable context (header/toolbar, not chat content)
-            let parent = el;
-            for (let i = 0; i < 8; i++) {
-                if (!parent) break;
-                if (parent.tagName === 'BUTTON' || window.getComputedStyle(parent).cursor === 'pointer') return true;
-                parent = parent.parentElement;
-            }
-            return false;
-        });
-        
-        // Fallback: any leaf node with a known model name
-        if (!modelEl) {
-            modelEl = textNodes2.find(el => {
-                const txt = el.innerText.trim();
-                return isModelName(txt);
-            });
-        }
-
-        if (modelEl) {
-            state.model = modelEl.innerText.trim();
-        }
-
-        // 3. Detect if agent is currently running (generating)
-        // Check for cancel/stop button visibility
-        const cancelBtn = document.querySelector('[data-tooltip-id="input-send-button-cancel-tooltip"]');
-        const stopIcon = document.querySelector('button svg.lucide-square')?.closest('button');
-        state.isRunning = (cancelBtn && cancelBtn.offsetParent !== null) || 
-                          (stopIcon && stopIcon.offsetParent !== null) || false;
-
-        return state;
-    } catch (e) { return { error: e.toString() }; }
-})()`;
-
-    for (const ctx of cdp.contexts) {
-        try {
-            const res = await cdp.call("Runtime.evaluate", {
-                expression: EXP,
-                returnByValue: true,
-                awaitPromise: true,
-                contextId: ctx.id
-            });
-            if (res.result?.value) return res.result.value;
-        } catch (e) { }
-    }
-    return { error: 'Context failed' };
+    return await evaluateCursor(cdp, `
+        return {
+            mode: __cr.getModeText() || 'Unknown',
+            model: __cr.getModelText() || 'Unknown',
+            isRunning: __cr.isBusy(),
+            composerStatus: __cr.getComposerStatus() || 'idle',
+            hasChat: !!__cr.findPanel(),
+            hasMessages: __cr.collectMessageNodes().length > 0,
+            editorFound: !!__cr.findEditor()
+        };
+    `, {
+        accept: (value) => value && typeof value === 'object'
+    });
 }
 
 // Simple hash function
@@ -2796,8 +2621,15 @@ async function main() {
 
         // Get App State
         app.get('/app-state', async (req, res) => {
-            if (!cdpConnection) return res.json({ mode: 'Unknown', model: 'Unknown' });
+            if (!cdpConnection) return res.json({ mode: 'Unknown', model: 'Unknown', isRunning: false, hasChat: false, hasMessages: false, editorFound: false });
             const result = await getAppState(cdpConnection);
+            res.json(result);
+        });
+
+        app.get('/dropdown-options', async (req, res) => {
+            const kind = req.query.kind === 'model' ? 'model' : 'mode';
+            if (!cdpConnection) return res.json({ error: 'CDP disconnected', kind, options: [] });
+            const result = await getDropdownOptions(cdpConnection, kind);
             res.json(result);
         });
 

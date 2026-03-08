@@ -180,14 +180,17 @@ let lastScrollPosition = 0;
 let ws = null;
 let idleTimer = null;
 let lastHash = '';
-let currentMode = 'Fast';
+let currentMode = 'Unknown';
+let currentModel = 'Unknown';
 let chatIsOpen = true; // Track if a chat is currently open
-let cachedCssText = ''; // Cache CSS to avoid unnecessary re-injection
+let cachedCssKey = ''; // Cache CSS signature to avoid unnecessary re-injection
 let lastRenderedHash = ''; // Track last rendered HTML hash to skip identical updates
 let lastRenderedHtmlHash = ''; // Track content hash to avoid unnecessary DOM rebuilds
 let pendingSnapshot = null; // Buffer for incoming WebSocket snapshots
 let renderScheduled = false; // Prevent multiple rAF calls
 let hasSnapshotLoaded = false;
+let availableModes = [];
+let availableModels = [];
 
 // Init theme from localStorage or default to dark
 applyTheme(localStorage.getItem('crTheme') || 'dark');
@@ -229,16 +232,16 @@ async function fetchAppState() {
         const res = await fetchWithAuth('/app-state');
         const data = await res.json();
 
-        // Mode Sync (Fast/Planning) - Desktop is source of truth
+        // Mode sync - desktop is source of truth
         if (data.mode && data.mode !== 'Unknown') {
             modeText.textContent = data.mode;
-            modeBtn.classList.toggle('active', data.mode === 'Planning');
             currentMode = data.mode;
         }
 
-        // Model Sync - Desktop is source of truth
+        // Model sync - desktop is source of truth
         if (data.model && data.model !== 'Unknown') {
             modelText.textContent = data.model;
+            currentModel = data.model;
         }
 
         // Running state sync - toggle send/stop button
@@ -300,8 +303,15 @@ function dismissSslBanner() {
 
 // Check SSL on load
 checkSslStatus();
-// --- Models ---
-const MODELS = [
+// --- Dropdown fallbacks ---
+const MODE_FALLBACK_OPTIONS = [
+    { name: 'Agent', description: 'Delegates multi-step work to Cursor agent when supported by your build.' },
+    { name: 'Ask', description: 'Keeps the interaction in ask mode when that option is available.' },
+    { name: 'Manual', description: 'Uses the manual composer mode when your Cursor build exposes it.' },
+    { name: 'Planning', description: 'Legacy planning mode used by older Cursor builds.' },
+    { name: 'Fast', description: 'Legacy fast mode used by older Cursor builds.' }
+];
+const MODEL_FALLBACK_OPTIONS = [
     { name: "Gemini 3.1 Pro (High)", badge: "New" },
     { name: "Gemini 3.1 Pro (Low)", badge: "New" },
     { name: "Gemini 3 Flash" },
@@ -510,17 +520,25 @@ function renderSnapshot(data) {
         document.head.appendChild(styleTag);
     }
 
-    // Only rebuild CSS if the source CSS from snapshot changed
-    if (data.css !== cachedCssText) {
-        cachedCssText = data.css;
+    const cssKey = fastHash(JSON.stringify({
+        css: data.css || '',
+        backgroundColor: data.backgroundColor || '',
+        color: data.color || '',
+        themeVars: data.themeVars || {}
+    }));
+
+    // Rebuild CSS when theme-relevant snapshot data changes.
+    if (cssKey !== cachedCssKey) {
+        cachedCssKey = cssKey;
         // Use IDE theme colors or fallback to defaults
         const tv = data.themeVars || {};
         const themeFg = tv['--vscode-editor-foreground'] || tv['--vscode-foreground'] || data.color || '#f0f0f2';
         const themeMuted = tv['--vscode-descriptionForeground'] || '#8a8d92';
+        const snapshotRootSelector = '[id^="workbench.panel.aichat"], #conversation, #chat, #cascade';
         const darkModeOverrides = '/* --- BASE SNAPSHOT CSS --- */\n' +
             data.css +
             '\n\n/* --- THEME OVERRIDES --- */\n' +
-            '#conversation, #chat, #cascade {\n' +
+            `${snapshotRootSelector} {\n` +
             '    background-color: transparent !important;\n' +
             '    color: var(--text-main) !important;\n' +
             '    font-family: \'Inter\', system-ui, sans-serif !important;\n' +
@@ -530,7 +548,7 @@ function renderSnapshot(data) {
             '}\n' +
             '\n' +
             '/* Fix stacking BUT preserve absolute/fixed positioning for dropdowns */\n' +
-            '#conversation > div, #chat > div, #cascade > div {\n' +
+            `${snapshotRootSelector} > div {\n` +
             '    position: static !important;\n' +
             '}\n' +
             '/* Preserve absolute positioning needed for dropdowns, tooltips, popups */\n' +
@@ -554,7 +572,7 @@ function renderSnapshot(data) {
             '    color: var(--text-main) !important;\n' +
             '}\n' +
             '\n' +
-            '#conversation a, #chat a, #cascade a {\n' +
+            `${snapshotRootSelector} a {\n` +
             '    color: #818cf8 !important;\n' +
             '    text-decoration: underline;\n' +
             '}\n' +
@@ -719,7 +737,10 @@ function renderSnapshot(data) {
             '[class*="bg-white"] {\n' +
             '    background-color: transparent !important;\n' +
             '}\n' +
-            '#conversation > div > div, #chat > div > div, #cascade > div > div {\n' +
+            `${snapshotRootSelector} > div > div,\n` +
+            `${snapshotRootSelector} .composer-message-group,\n` +
+            `${snapshotRootSelector} .composer-rendered-message,\n` +
+            `${snapshotRootSelector} .markdown-root {\n` +
             '    background-color: transparent !important;\n' +
             '}\n' +
             '\n' +
@@ -1536,15 +1557,120 @@ function toggleDropdown(menu, chip) {
 
 dropdownBackdrop.addEventListener('click', closeAllDropdowns);
 
-// --- Mode dropdown ---
-modeBtn.addEventListener('click', () => {
+async function fetchDropdownOptions(kind) {
+    const res = await fetchWithAuth(`/dropdown-options?kind=${encodeURIComponent(kind)}`);
+    return res.json();
+}
+
+function buildDropdownMenu(menu, title, options, currentValue, descriptions = {}, badges = {}) {
+    menu.innerHTML = '';
+
+    const titleEl = document.createElement('div');
+    titleEl.className = 'dropdown-title';
+    titleEl.textContent = title;
+    menu.appendChild(titleEl);
+
+    if (!options.length) {
+        const empty = document.createElement('div');
+        empty.className = 'dropdown-option';
+        empty.dataset.value = '';
+        empty.textContent = 'No options available';
+        menu.appendChild(empty);
+        return;
+    }
+
+    options.forEach((value) => {
+        const div = document.createElement('div');
+        const isModelMenu = title === 'Model';
+        const isActive = value === currentValue;
+        div.className = 'dropdown-option' + (isModelMenu ? ' model-option' : '') + (isActive ? ' active' : '');
+        div.dataset.value = value;
+
+        if (isModelMenu) {
+            const badgeHtml = badges[value] ? `<span class="model-badge">${escapeHtml(badges[value])}</span>` : '';
+            div.innerHTML = `<span class="model-option-name">${escapeHtml(value)}</span>${badgeHtml}`;
+        } else {
+            const desc = descriptions[value];
+            div.innerHTML = `<div class="dropdown-option-name">${escapeHtml(value)}</div>` +
+                (desc ? `<div class="dropdown-option-desc">${escapeHtml(desc)}</div>` : '');
+        }
+
+        menu.appendChild(div);
+    });
+}
+
+function setDropdownLoading(menu, title) {
+    menu.innerHTML = `<div class="dropdown-title">${title}</div><div class="dropdown-option" data-value="">Loading...</div>`;
+}
+
+async function openModeDropdown() {
+    const isOpen = modeMenu.classList.contains('show');
+    if (isOpen) {
+        closeAllDropdowns();
+        return;
+    }
+
+    const descriptionMap = Object.fromEntries(MODE_FALLBACK_OPTIONS.map(item => [item.name, item.description || '']));
+    setDropdownLoading(modeMenu, 'Mode');
     toggleDropdown(modeMenu, modeBtn);
-});
+
+    try {
+        const data = await fetchDropdownOptions('mode');
+        const options = Array.isArray(data.options) && data.options.length
+            ? data.options
+            : (data.current && data.current !== 'Unknown' ? [data.current] : [currentMode].filter(Boolean));
+        availableModes = options;
+
+        if (data.current && data.current !== 'Unknown') {
+            currentMode = data.current;
+            modeText.textContent = data.current;
+        }
+
+        buildDropdownMenu(modeMenu, 'Mode', options, currentMode, descriptionMap);
+    } catch (e) {
+        availableModes = [currentMode].filter(Boolean);
+        buildDropdownMenu(modeMenu, 'Mode', availableModes, currentMode, descriptionMap);
+    }
+}
+
+async function openModelDropdown() {
+    const isOpen = modelMenu.classList.contains('show');
+    if (isOpen) {
+        closeAllDropdowns();
+        return;
+    }
+
+    const badgeMap = Object.fromEntries(MODEL_FALLBACK_OPTIONS.filter(item => item.badge).map(item => [item.name, item.badge]));
+    setDropdownLoading(modelMenu, 'Model');
+    toggleDropdown(modelMenu, modelBtn);
+
+    try {
+        const data = await fetchDropdownOptions('model');
+        const options = Array.isArray(data.options) && data.options.length
+            ? data.options
+            : (data.current && data.current !== 'Unknown' ? [data.current] : [currentModel].filter(Boolean));
+        availableModels = options;
+
+        if (data.current && data.current !== 'Unknown') {
+            currentModel = data.current;
+            modelText.textContent = data.current;
+        }
+
+        buildDropdownMenu(modelMenu, 'Model', options, currentModel, {}, badgeMap);
+    } catch (e) {
+        availableModels = [currentModel].filter(Boolean);
+        buildDropdownMenu(modelMenu, 'Model', availableModels, currentModel, {}, badgeMap);
+    }
+}
+
+// --- Mode dropdown ---
+modeBtn.addEventListener('click', openModeDropdown);
 
 modeMenu.addEventListener('click', async (e) => {
     const opt = e.target.closest('.dropdown-option');
     if (!opt) return;
     const mode = opt.dataset.value;
+    if (!mode) return;
     closeAllDropdowns();
 
     modeText.textContent = 'Setting...';
@@ -1556,12 +1682,12 @@ modeMenu.addEventListener('click', async (e) => {
         });
         const data = await res.json();
         if (data.success) {
-            currentMode = mode;
-            modeText.textContent = mode;
-            updateWorkspaceChrome({ mode });
+            currentMode = data.currentMode || mode;
+            modeText.textContent = currentMode;
+            updateWorkspaceChrome({ mode: currentMode });
             // Update active state
             modeMenu.querySelectorAll('.dropdown-option').forEach(o => {
-                o.classList.toggle('active', o.dataset.value === mode);
+                o.classList.toggle('active', o.dataset.value === currentMode);
             });
         } else {
             alert('Error: ' + (data.error || 'Unknown'));
@@ -1572,25 +1698,8 @@ modeMenu.addEventListener('click', async (e) => {
     }
 });
 
-// --- Model dropdown - build options dynamically ---
-function buildModelMenu() {
-    const currentModel = modelText.textContent;
-    modelMenu.innerHTML = '<div class="dropdown-title">Model</div>';
-    MODELS.forEach(item => {
-        const isActive = item.name === currentModel;
-        const div = document.createElement('div');
-        div.className = 'dropdown-option model-option' + (isActive ? ' active' : '');
-        div.dataset.value = item.name;
-        const badgeHtml = item.badge ? `<span class="model-badge">${item.badge}</span>` : '';
-        div.innerHTML = `<span class="model-option-name">${item.name}</span>${badgeHtml}`;
-        modelMenu.appendChild(div);
-    });
-}
-
-modelBtn.addEventListener('click', () => {
-    buildModelMenu();
-    toggleDropdown(modelMenu, modelBtn);
-});
+// --- Model dropdown ---
+modelBtn.addEventListener('click', openModelDropdown);
 
 modelMenu.addEventListener('click', async (e) => {
     const opt = e.target.closest('.dropdown-option');
@@ -1609,14 +1718,18 @@ modelMenu.addEventListener('click', async (e) => {
         });
         const data = await res.json();
         if (data.success) {
-            modelText.textContent = model;
-            updateWorkspaceChrome({ model });
+            currentModel = data.currentModel || model;
+            modelText.textContent = currentModel;
+            updateWorkspaceChrome({ model: currentModel });
+            modelMenu.querySelectorAll('.dropdown-option').forEach(o => {
+                o.classList.toggle('active', o.dataset.value === currentModel);
+            });
         } else {
             alert('Error: ' + (data.error || 'Unknown'));
-            modelText.textContent = prev;
+            modelText.textContent = currentModel || prev;
         }
     } catch (e) {
-        modelText.textContent = prev;
+        modelText.textContent = currentModel || prev;
     }
 });
 
