@@ -6,6 +6,10 @@ chcp 65001 >nul 2>&1
 cd /d "%~dp0"
 
 set "RUN_LOG=%CD%\run-launch.log"
+set "CAN_PAUSE=1"
+for /f "usebackq delims=" %%r in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "[Console]::IsInputRedirected" 2^>nul`) do (
+    if /i "%%r"=="True" set "CAN_PAUSE=0"
+)
 call :log "========================================"
 call :log "Launcher started in %CD%"
 
@@ -26,7 +30,18 @@ if /i "%~1"=="--no-open" set "OPEN_BROWSER=0"
 if /i "%~1"=="--no-verify" set "VERIFY_STARTUP=0"
 if /i "%~1"=="--port" (
     shift
-    if not "%~1"=="" set "REQUESTED_PORT=%~1"
+    call set "REQUESTED_PORT=%%~1"
+    if defined REQUESTED_PORT (
+        call :validate_port_number "!REQUESTED_PORT!"
+        if "!PORT_VALID!"=="0" (
+            echo       [WARN] Ignoring invalid --port value: !REQUESTED_PORT!
+            call :log "Invalid --port value ignored: !REQUESTED_PORT!"
+            set "REQUESTED_PORT="
+        )
+    ) else (
+        echo       [WARN] --port was provided without a value. Ignoring.
+        call :log "--port missing value"
+    )
 )
 shift
 goto parse_args
@@ -43,7 +58,7 @@ if errorlevel 1 (
     echo [ERROR] Node.js is not installed or not in PATH.
     echo         Download from: https://nodejs.org/
     call :log "Node.js not found"
-    pause
+    call :pause_if_interactive
     exit /b 1
 )
 
@@ -51,7 +66,7 @@ where npm >nul 2>nul
 if errorlevel 1 (
     echo [ERROR] npm is not installed or not in PATH.
     call :log "npm not found"
-    pause
+    call :pause_if_interactive
     exit /b 1
 )
 
@@ -59,7 +74,7 @@ where curl >nul 2>nul
 if errorlevel 1 (
     echo [ERROR] curl is required for Cursor CDP detection on Windows.
     call :log "curl not found"
-    pause
+    call :pause_if_interactive
     exit /b 1
 )
 
@@ -74,7 +89,7 @@ if not exist "node_modules" (
     if errorlevel 1 (
         echo [ERROR] npm install failed.
         call :log "npm install failed"
-        pause
+        call :pause_if_interactive
         exit /b 1
     )
     echo       Dependencies installed.
@@ -227,7 +242,7 @@ call :select_run_port !PREFERRED_PORT!
 if not defined RUN_PORT (
     echo [ERROR] Could not find a free port for Cursor Remote.
     call :log "No free application port found"
-    pause
+    call :pause_if_interactive
     exit /b 1
 )
 
@@ -287,7 +302,7 @@ set "TAURI_EXIT=%errorlevel%"
 if not "!TAURI_EXIT!"=="0" (
     echo [ERROR] Tauri dev failed with exit code !TAURI_EXIT!.
     call :log "Tauri dev failed with exit code !TAURI_EXIT!"
-    pause
+    call :pause_if_interactive
 )
 exit /b !TAURI_EXIT!
 
@@ -318,7 +333,7 @@ if "!VERIFY_STARTUP!"=="1" (
     if errorlevel 1 (
         echo [ERROR] Startup verification failed. Check cursor-remote.log and run-launch.log.
         call :log "Startup verification failed"
-        pause
+        call :pause_if_interactive
         exit /b 1
     )
 ) else (
@@ -419,6 +434,16 @@ set "PORT_FREE=0"
 if errorlevel 1 set "PORT_FREE=1"
 exit /b 0
 
+:validate_port_number
+set "PORT_VALID=0"
+set "PORT_NUMBER=%~1"
+if not defined PORT_NUMBER exit /b 0
+echo(!PORT_NUMBER!| findstr /R "^[0-9][0-9]*$" >nul || exit /b 0
+set /a PORT_NUMBER+=0 2>nul
+if errorlevel 1 exit /b 0
+if !PORT_NUMBER! GEQ 1 if !PORT_NUMBER! LEQ 65535 set "PORT_VALID=1"
+exit /b 0
+
 :stop_workspace_servers
 echo       Stopping existing Cursor Remote server processes for this workspace...
 set "FOUND_WORKSPACE_PROCESS=0"
@@ -472,4 +497,8 @@ exit /b 0
 
 :log
 >> "%RUN_LOG%" echo [%date% %time%] %~1
+exit /b 0
+
+:pause_if_interactive
+if "!CAN_PAUSE!"=="1" pause
 exit /b 0
