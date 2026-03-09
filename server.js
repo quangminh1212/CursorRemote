@@ -12,7 +12,7 @@ import WebSocket from 'ws';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { inspectUI } from './ui_inspector.js';
-import { execSync, spawn } from 'child_process';
+import { execFileSync, execSync, spawn } from 'child_process';
 import multer from 'multer';
 import QRCode from 'qrcode';
 
@@ -151,12 +151,63 @@ const __cr = (() => {
     const escapeRegExp = (value) => String(value || '').replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
 
     const queryAllVisible = (selector, root = document) => Array.from(root.querySelectorAll(selector)).filter(isVisible);
+    const uniqueElements = (elements) => elements.filter((el, index, arr) => el && arr.indexOf(el) === index);
+    const getArea = (el) => {
+        const rect = el?.getBoundingClientRect?.();
+        return rect ? Math.max(rect.width, 0) * Math.max(rect.height, 0) : 0;
+    };
+    const getLeafTexts = (el) => {
+        if (!el) return [];
+        const seen = new Set();
+        return [el, ...Array.from(el.querySelectorAll('*'))]
+            .filter(node => node === el || !node.children.length)
+            .map(node => normalizeText(node.textContent || ''))
+            .filter(text => {
+                if (!text) return false;
+                if (/^[\u2039\u203a\u25be\u2304\u2193]+$/u.test(text)) return false;
+                const key = text.toLowerCase();
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
+    };
+    const getModeHintText = () => {
+        const panel = findPanel() || document;
+        const hints = queryAllVisible('.aislash-editor-placeholder, [data-placeholder]', panel)
+            .map(textOf)
+            .map(normalizeText);
+        for (const hint of hints) {
+            const match = hint.match(/^(agent|plan|debug|ask|fast|planning|manual)\b/i);
+            if (match) return match[1];
+        }
+        return '';
+    };
+    const pickModeName = (value) => {
+        const normalized = normalizeText(value);
+        if (!normalized) return '';
+        const match = normalized.match(/(agent|plan|debug|ask|fast|planning|manual)/i);
+        return match ? match[1] : normalized;
+    };
 
     const findPanel = () => {
-        return document.querySelector('[id^="workbench.panel.aichat"]') ||
-            document.getElementById('conversation') ||
-            document.getElementById('chat') ||
-            document.getElementById('cascade');
+        const candidates = uniqueElements([
+            ...queryAllVisible('[id^="workbench.panel.aichat"]'),
+            document.getElementById('conversation'),
+            document.getElementById('chat'),
+            document.getElementById('cascade')
+        ].filter(isVisible));
+
+        candidates.sort((a, b) => {
+            const aScore = getArea(a) +
+                (a.querySelector('.composer-bar, [data-composer-id]') ? 500000 : 0) +
+                (a.querySelector('[data-lexical-editor="true"], [contenteditable="true"]') ? 250000 : 0);
+            const bScore = getArea(b) +
+                (b.querySelector('.composer-bar, [data-composer-id]') ? 500000 : 0) +
+                (b.querySelector('[data-lexical-editor="true"], [contenteditable="true"]') ? 250000 : 0);
+            return bScore - aScore;
+        });
+
+        return candidates[0] || null;
     };
 
     const findEditor = () => {
@@ -295,7 +346,7 @@ const __cr = (() => {
     };
 
     const findMenuContainers = () => {
-        const containers = queryAllVisible('[role="menu"], [role="listbox"], .ui-menu__content, .context-view, [data-radix-popper-content-wrapper]', document);
+        const containers = queryAllVisible('[role="menu"], [role="dialog"], [role="listbox"], .ui-menu__content, .context-view, [data-radix-popper-content-wrapper], [data-radix-popper-content-wrapper] > div, .monaco-menu-container, .monaco-select-box-dropdown-container', document);
         containers.sort((a, b) => {
             const aRect = a.getBoundingClientRect();
             const bRect = b.getBoundingClientRect();
@@ -350,6 +401,50 @@ const __cr = (() => {
         return /search/i.test(placeholder);
     }) || null;
 
+    const MODEL_MENU_MARKERS = [
+        /^auto(?:\b|\s)/i,
+        /^max mode(?:\b|\s)/i,
+        /^use multiple models?(?:\b|\s)/i,
+        /^search models?$/i,
+        /^add models?$/i
+    ];
+
+    const getHorizontalOverlap = (a, b) => Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+
+    const scoreModelMenuContainer = (container) => {
+        if (!container || !isVisible(container)) return -Infinity;
+
+        const rect = container.getBoundingClientRect();
+        if (rect.width < 150 || rect.width > 420 || rect.height < 40 || rect.height > Math.min(window.innerHeight * 0.9, 560)) {
+            return -Infinity;
+        }
+
+        const text = normalizeText(textOf(container));
+        let score = 0;
+
+        if (findModelSearchInput(container)) score += 5;
+        score += MODEL_MENU_MARKERS.reduce((count, marker) => count + (marker.test(text) ? 1 : 0), 0) * 3;
+
+        const modelButton = findModelButton();
+        if (modelButton) {
+            const buttonRect = modelButton.getBoundingClientRect();
+            const overlap = getHorizontalOverlap(rect, buttonRect);
+            if (overlap > 0) score += Math.min(4, overlap / Math.max(buttonRect.width, 1));
+
+            const verticalGap = rect.top >= buttonRect.bottom
+                ? rect.top - buttonRect.bottom
+                : buttonRect.top >= rect.bottom
+                    ? buttonRect.top - rect.bottom
+                    : 0;
+            score += Math.max(0, 3 - verticalGap / 80);
+            if (rect.bottom <= buttonRect.top + 80) score += 1;
+        }
+
+        if (rect.width >= 180 && rect.width <= 320) score += 1;
+        if (rect.height >= 120 && rect.height <= 440) score += 1;
+        return score;
+    };
+
     const findModelMenuRoot = () => {
         const searchInput = findModelSearchInput(document);
         if (searchInput) {
@@ -364,9 +459,16 @@ const __cr = (() => {
             }
         }
 
-        return findMenuContainers().find(container => !!findModelSearchInput(container)) ||
-            findMenuContainers()[0] ||
-            null;
+        const scoredContainers = findMenuContainers()
+            .map(container => ({ container, score: scoreModelMenuContainer(container) }))
+            .filter(item => Number.isFinite(item.score))
+            .sort((a, b) => b.score - a.score);
+
+        if (scoredContainers[0]?.score > 0) {
+            return scoredContainers[0].container;
+        }
+
+        return findMenuContainers().find(container => !!findModelSearchInput(container)) || null;
     };
 
     const getSwitchState = (el) => {
@@ -428,7 +530,7 @@ const __cr = (() => {
                 text: normalizeText(textOf(el)),
                 rect: el.getBoundingClientRect()
             }))
-            .filter(item => item.text && item.rect.width > 90 && item.rect.height >= 18 && item.rect.height <= 96)
+            .filter(item => item.text && item.rect.width > 50 && item.rect.height >= 16 && item.rect.height <= 120)
             .sort((a, b) => {
                 const yDiff = a.rect.top - b.rect.top;
                 return Math.abs(yDiff) > 1 ? yDiff : a.rect.left - b.rect.left;
@@ -580,13 +682,36 @@ const __cr = (() => {
     };
 
     const getDropdownText = (selector) => {
-        const panel = findPanel();
-        const el = panel ? panel.querySelector(selector) : null;
-        return textOf(el);
+        const panel = findPanel() || document;
+        const el = uniqueElements(queryAllVisible(selector, panel).map(resolveTrigger))[0] || null;
+        if (!el) return '';
+        const leafText = getLeafTexts(el)[0];
+        return leafText || textOf(el);
     };
 
-    const getModeText = () => getDropdownText('.composer-unified-dropdown');
-    const getModelText = () => getDropdownText('.composer-unified-dropdown-model');
+    const getModeText = () => {
+        const button = findModeButton();
+        const dataMode = pickModeName(button?.getAttribute?.('data-mode') || '');
+        if (dataMode) return dataMode;
+
+        const leafText = getLeafTexts(button).find(text => /^(agent|plan|debug|ask|fast|planning|manual)\b/i.test(text));
+        if (leafText) return pickModeName(leafText);
+
+        const hintedMode = getModeHintText();
+        if (hintedMode) return pickModeName(hintedMode);
+
+        return pickModeName(getDropdownText('.composer-unified-dropdown'));
+    };
+
+    const getModelText = () => {
+        const button = findModelButton();
+        if (!button) return '';
+
+        const preferred = getLeafTexts(button).find(text => /(?:gpt|claude|sonnet|opus|composer|gemini|\d\.\d)/i.test(text));
+        if (preferred) return preferred;
+
+        return getDropdownText('.composer-unified-dropdown-model');
+    };
 
     const findDropdownMenuItem = (targetText, containers = findMenuContainers()) => {
         const normalized = targetText.trim().toLowerCase();
@@ -598,15 +723,32 @@ const __cr = (() => {
     };
 
     const findModeButton = () => {
-        const panel = findPanel();
-        const label = panel ? panel.querySelector('.composer-unified-dropdown') : null;
-        return resolveTrigger(label);
+        const panel = findPanel() || document;
+        const candidates = uniqueElements(
+            queryAllVisible('.composer-unified-dropdown, [data-mode]', panel)
+                .map(resolveTrigger)
+                .filter(isVisible)
+        ).sort((a, b) => a.getBoundingClientRect().y - b.getBoundingClientRect().y);
+        return candidates[0] || null;
     };
 
     const findModelButton = () => {
-        const panel = findPanel();
-        const label = panel ? panel.querySelector('.composer-unified-dropdown-model') : null;
-        return resolveTrigger(label);
+        const panel = findPanel() || document;
+        const directMatches = uniqueElements(
+            queryAllVisible('.composer-unified-dropdown-model, [id*="unifiedmodeldropdown"]', panel)
+                .map(resolveTrigger)
+                .filter(isVisible)
+        ).sort((a, b) => a.getBoundingClientRect().y - b.getBoundingClientRect().y);
+        if (directMatches[0]) return directMatches[0];
+
+        const composer = queryAllVisible('.composer-bar, [data-composer-id]', panel)[0] || panel;
+        const fallbackMatches = uniqueElements(
+            queryAllVisible('button, [role="button"], a, div', composer)
+                .map(resolveTrigger)
+                .filter(isVisible)
+                .filter(el => getLeafTexts(el).some(text => /(?:gpt|claude|sonnet|opus|composer|gemini|\d\.\d)/i.test(text)))
+        ).sort((a, b) => a.getBoundingClientRect().x - b.getBoundingClientRect().x);
+        return fallbackMatches[0] || null;
     };
 
     const collectMessageNodes = () => {
@@ -1898,7 +2040,7 @@ async function setModelToggle(cdp, toggleKey, enabled) {
 
 async function getDropdownOptions(cdp, kind) {
     const normalizedKind = kind === 'model' ? 'model' : 'mode';
-    return await evaluateCursor(cdp, `
+    const result = await evaluateCursor(cdp, `
         const kind = ${JSON.stringify(normalizedKind)};
         const button = kind === 'model' ? __cr.findModelButton() : __cr.findModeButton();
         if (!button) return { error: kind + '_button_not_found', options: [] };
@@ -1974,6 +2116,80 @@ async function getDropdownOptions(cdp, kind) {
     `, {
         accept: (value) => value && typeof value === 'object'
     });
+
+    if (normalizedKind === 'model' && result && !result.error) {
+        const hasStructuredMenu =
+            !!result.searchPlaceholder ||
+            !!result.footerLabel ||
+            (Array.isArray(result.toggles) && result.toggles.length >= 2) ||
+            (Array.isArray(result.options) && result.options.length >= 3);
+
+        if (!hasStructuredMenu) {
+            const fallbackCurrent = result.current && result.current !== 'Unknown' ? result.current : 'Auto';
+            const fallbackAutoDescription = 'Balanced quality and speed, recommended for most tasks';
+            result.current = fallbackCurrent;
+            result.searchPlaceholder = 'Search models';
+            result.toggles = [
+                {
+                    key: 'auto',
+                    label: 'Auto',
+                    description: fallbackAutoDescription,
+                    enabled: /^auto$/i.test(fallbackCurrent)
+                },
+                {
+                    key: 'max-mode',
+                    label: 'MAX Mode',
+                    description: '',
+                    enabled: false
+                },
+                {
+                    key: 'multi-model',
+                    label: 'Use Multiple Models',
+                    description: '',
+                    enabled: false
+                }
+            ];
+            result.options = ['Composer 1.5', 'GPT-5.4', 'GPT-5.3 Codex', 'Sonnet 4.6', 'Opus 4.6'];
+            result.autoAvailable = true;
+            result.autoEnabled = /^auto$/i.test(fallbackCurrent);
+            result.autoLabel = 'Auto';
+            result.autoDescription = fallbackAutoDescription;
+            result.footerLabel = '';
+        }
+    }
+
+    if (normalizedKind === 'mode' && result && !result.error) {
+        const fallbackModeOptions = ['Agent', 'Plan', 'Debug', 'Ask'];
+        const aliasMap = {
+            agent: 'Agent',
+            fast: 'Agent',
+            plan: 'Plan',
+            planning: 'Plan',
+            debug: 'Debug',
+            manual: 'Debug',
+            ask: 'Ask'
+        };
+        const normalizedCurrent = String(result.current || '').trim();
+        const displayCurrent = aliasMap[normalizedCurrent.toLowerCase()] || normalizedCurrent;
+
+        if (displayCurrent && displayCurrent !== 'Unknown') {
+            result.current = displayCurrent;
+        }
+
+        const normalizedOptions = Array.isArray(result.options)
+            ? result.options
+                .map(option => aliasMap[String(option || '').trim().toLowerCase()] || String(option || '').trim())
+                .filter(Boolean)
+            : [];
+
+        result.options = normalizedOptions.length >= 2
+            ? Array.from(new Set(normalizedOptions))
+            : (displayCurrent && displayCurrent !== 'Unknown'
+                ? Array.from(new Set([displayCurrent, ...fallbackModeOptions]))
+                : fallbackModeOptions);
+    }
+
+    return result;
 }
 
 // Start New Chat - Click the + button at the TOP of the chat window (NOT the context/media + button)
@@ -2178,7 +2394,7 @@ async function hasChatOpen(cdp) {
 
 // Get App State (Mode & Model)
 async function getAppState(cdp) {
-    return await evaluateCursor(cdp, `
+    const result = await evaluateCursor(cdp, `
         return {
             mode: __cr.getModeText() || 'Unknown',
             model: __cr.getModelText() || 'Unknown',
@@ -2191,6 +2407,23 @@ async function getAppState(cdp) {
     `, {
         accept: (value) => value && typeof value === 'object'
     });
+
+    const modeAliasMap = {
+        agent: 'Agent',
+        fast: 'Agent',
+        plan: 'Plan',
+        planning: 'Plan',
+        debug: 'Debug',
+        manual: 'Debug',
+        ask: 'Ask'
+    };
+
+    if (result?.mode) {
+        const normalizedMode = String(result.mode).trim().toLowerCase();
+        result.mode = modeAliasMap[normalizedMode] || result.mode;
+    }
+
+    return result;
 }
 
 // Simple hash function
@@ -2317,14 +2550,49 @@ async function startPolling(wss) {
     poll();
 }
 
+function ensureHttpsCertificates() {
+    const keyPath = join(RUNTIME_ROOT, 'certs', 'server.key');
+    const certPath = join(RUNTIME_ROOT, 'certs', 'server.cert');
+    let certsExist = fs.existsSync(keyPath) && fs.existsSync(certPath);
+
+    if (IS_EMBEDDED_RUNTIME || certsExist) {
+        return { keyPath, certPath, certsExist };
+    }
+
+    console.log('[HTTPS] SSL certificates missing. Generating local certificates...');
+    try {
+        execFileSync(process.execPath, [join(__dirname, 'generate_ssl.js')], {
+            cwd: __dirname,
+            stdio: 'pipe',
+            env: {
+                ...process.env,
+                CR_RUNTIME_DIR: RUNTIME_ROOT
+            }
+        });
+    } catch (error) {
+        const stderr = error?.stderr?.toString?.().trim();
+        const stdout = error?.stdout?.toString?.().trim();
+        const detail = stderr || stdout || error.message;
+        console.error('[HTTPS] Failed to generate SSL certificates:', detail);
+    }
+
+    certsExist = fs.existsSync(keyPath) && fs.existsSync(certPath);
+    if (!certsExist) {
+        console.error('[HTTPS] Browser mode requires HTTPS certificates. Refusing to start without HTTPS.');
+    }
+
+    return { keyPath, certPath, certsExist };
+}
+
 // Create Express app
 async function createServer() {
     const app = express();
 
     // Check for SSL certificates
-    const keyPath = join(RUNTIME_ROOT, 'certs', 'server.key');
-    const certPath = join(RUNTIME_ROOT, 'certs', 'server.cert');
-    const certsExist = fs.existsSync(keyPath) && fs.existsSync(certPath);
+    const { keyPath, certPath, certsExist } = ensureHttpsCertificates();
+    if (!IS_EMBEDDED_RUNTIME && !certsExist) {
+        throw new Error('HTTPS certificates could not be prepared.');
+    }
     const hasSSL = certsExist && !IS_EMBEDDED_RUNTIME;
 
     let server;
