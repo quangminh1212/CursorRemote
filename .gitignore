@@ -39,7 +39,6 @@ certs/
 
 # Uploaded files (runtime data)
 uploads/
-img/
 
 # Registry
 registry/snapshot_debug.html
