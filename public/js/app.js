@@ -45,6 +45,7 @@ const refreshBtn = document.getElementById('refreshBtn');
 const stopBtn = document.getElementById('stopBtn');
 const newChatBtn = document.getElementById('newChatBtn');
 const historyBtn = document.getElementById('historyBtn');
+const historyQuickBtn = document.getElementById('historyQuickBtn');
 const attachBtn = document.getElementById('attachBtn');
 const fileInput = document.getElementById('fileInput');
 const settingsBtn = document.getElementById('settingsBtn');
@@ -191,6 +192,7 @@ let renderScheduled = false; // Prevent multiple rAF calls
 let hasSnapshotLoaded = false;
 let availableModes = [];
 let availableModels = [];
+let lastModelDropdownState = null;
 
 // Init theme from localStorage or default to dark
 applyTheme(localStorage.getItem('crTheme') || 'dark');
@@ -535,269 +537,450 @@ function renderSnapshot(data) {
         const themeFg = tv['--vscode-editor-foreground'] || tv['--vscode-foreground'] || data.color || '#f0f0f2';
         const themeMuted = tv['--vscode-descriptionForeground'] || '#8a8d92';
         const snapshotRootSelector = '[id^="workbench.panel.aichat"], #conversation, #chat, #cascade';
-        const darkModeOverrides = '/* --- BASE SNAPSHOT CSS --- */\n' +
-            data.css +
-            '\n\n/* --- THEME OVERRIDES --- */\n' +
-            `${snapshotRootSelector} {\n` +
-            '    background-color: transparent !important;\n' +
-            '    color: var(--text-main) !important;\n' +
-            '    font-family: \'Inter\', system-ui, sans-serif !important;\n' +
-            '    position: relative !important;\n' +
-            '    height: auto !important;\n' +
-            '    width: 100% !important;\n' +
-            '}\n' +
-            '\n' +
-            '/* Fix stacking BUT preserve absolute/fixed positioning for dropdowns */\n' +
-            `${snapshotRootSelector} > div {\n` +
-            '    position: static !important;\n' +
-            '}\n' +
-            '/* Preserve absolute positioning needed for dropdowns, tooltips, popups */\n' +
-            '[style*="position: absolute"], [style*="position: fixed"],\n' +
-            '[data-headlessui-state], [id*="headlessui"] {\n' +
-            '    position: absolute !important;\n' +
-            '}\n' +
-            '\n' +
-            '/* Force black/very dark inline text to light (preserve other colors) */\n' +
-            '[style*="color: rgb(0, 0, 0)"], [style*="color: black"],\n' +
-            '[style*="color:#000"], [style*="color: #000"],\n' +
-            '[style*="color: rgb(3"], [style*="color: rgb(2"],\n' +
-            '[style*="color: rgb(1, "], [style*="color: rgb(5, "],\n' +
-            '[style*="color: rgb(10,"], [style*="color: rgb(15,"],\n' +
-            '[style*="color: rgb(20,"], [style*="color: rgb(25,"],\n' +
-            '[style*="color: rgb(30,"], [style*="color: rgb(35,"],\n' +
-            '[style*="color: rgb(40,"], [style*="color: rgb(45,"],\n' +
-            '[style*="color: rgb(50,"], [style*="color: rgb(55,"],\n' +
-            '[style*="color: rgb(60,"], [style*="color: rgb(65,"],\n' +
-            '[style*="color: rgb(70,"], [style*="color: rgb(75,"] {\n' +
-            '    color: var(--text-main) !important;\n' +
-            '}\n' +
-            '\n' +
-            `${snapshotRootSelector} a {\n` +
-            '    color: #818cf8 !important;\n' +
-            '    text-decoration: underline;\n' +
-            '}\n' +
-            '\n' +
-            '/* Hide broken local file icons (served from /c:/Users/... paths) */\n' +
-            'img[src^="/c:"], img[src^="/C:"], img[src*="AppData"] {\n' +
-            '    display: none !important;\n' +
-            '}\n' +
-            '\n' +
-            '/* Override Tailwind default block display for embedded file icons */\n' +
-            'img, svg {\n' +
-            '    display: inline !important;\n' +
-            '    vertical-align: middle !important;\n' +
-            '}\n' +
-            '/* Force file-reference wrappers (icon + filename) to stay inline */\n' +
-            'div:has(> img[src^="data:"]), div:has(> img[alt]), span:has(> img) {\n' +
-            '    display: inline !important;\n' +
-            '    vertical-align: middle !important;\n' +
-            '}\n' +
-            '/* Inline-flex containers from Cursor (e.g. file mentions) */\n' +
-            '[class*="inline-flex"], [class*="inline-block"], [class*="items-center"]:has(img) {\n' +
-            '    display: inline-flex !important;\n' +
-            '    vertical-align: middle !important;\n' +
-            '}\n' +
-            '\n' +
-            '/* Fix Inline Code - Ultra-compact */\n' +
-            ':not(pre) > code {\n' +
-            '    padding: 0px 2px !important;\n' +
-            '    border-radius: 2px !important;\n' +
-            '    background-color: rgba(255, 255, 255, 0.08) !important;\n' +
-            '    font-size: 0.82em !important;\n' +
-            '    line-height: 1 !important;\n' +
-            '    white-space: normal !important;\n' +
-            '}\n' +
-            '\n' +
-            'pre, code, .monaco-editor-background, [class*="terminal"] {\n' +
-            '    background-color: #1a1b20 !important;\n' +
-            '    color: #e0e0e4 !important;\n' +
-            '    font-family: \'JetBrains Mono\', monospace !important;\n' +
-            '    border-radius: 3px;\n' +
-            '    border: 1px solid #2a2b32;\n' +
-            '}\n' +
-            '                \n' +
-            '/* Multi-line Code Block - Minimal */\n' +
-            'pre {\n' +
-            '    position: relative !important;\n' +
-            '    white-space: pre-wrap !important; \n' +
-            '    word-break: break-word !important;\n' +
-            '    padding: 4px 6px !important;\n' +
-            '    margin: 2px 0 !important;\n' +
-            '    display: block !important;\n' +
-            '    width: 100% !important;\n' +
-            '}\n' +
-            '                \n' +
-            'pre.has-copy-btn {\n' +
-            '    padding-right: 28px !important;\n' +
-            '}\n' +
-            '                \n' +
-            '/* Single-line Code Block - Minimal */\n' +
-            'pre.single-line-pre {\n' +
-            '    display: inline-block !important;\n' +
-            '    width: auto !important;\n' +
-            '    max-width: 100% !important;\n' +
-            '    padding: 0px 4px !important;\n' +
-            '    margin: 0px !important;\n' +
-            '    vertical-align: middle !important;\n' +
-            '    background-color: #1a1b20 !important;\n' +
-            '    font-size: 0.85em !important;\n' +
-            '}\n' +
-            '                \n' +
-            'pre.single-line-pre > code {\n' +
-            '    display: inline !important;\n' +
-            '    white-space: nowrap !important;\n' +
-            '}\n' +
-            '                \n' +
-            'pre:not(.single-line-pre) > code {\n' +
-            '    display: block !important;\n' +
-            '    width: 100% !important;\n' +
-            '    overflow-x: auto !important;\n' +
-            '    background: transparent !important;\n' +
-            '    border: none !important;\n' +
-            '    padding: 0 !important;\n' +
-            '    margin: 0 !important;\n' +
-            '}\n' +
-            '                \n' +
-            '.mobile-copy-btn {\n' +
-            '    position: absolute !important;\n' +
-            '    top: 2px !important;\n' +
-            '    right: 2px !important;\n' +
-            '    background: rgba(26, 27, 32, 0.6) !important;\n' +
-            '    color: #8a8d92 !important;\n' +
-            '    border: none !important;\n' +
-            '    width: 24px !important; \n' +
-            '    height: 24px !important;\n' +
-            '    padding: 0 !important;\n' +
-            '    cursor: pointer !important;\n' +
-            '    display: flex !important;\n' +
-            '    align-items: center !important;\n' +
-            '    justify-content: center !important;\n' +
-            '    border-radius: 4px !important;\n' +
-            '    transition: all 0.2s ease !important;\n' +
-            '    -webkit-tap-highlight-color: transparent !important;\n' +
-            '    z-index: 10 !important;\n' +
-            '    margin: 0 !important;\n' +
-            '}\n' +
-            '                \n' +
-            '.mobile-copy-btn:hover,\n' +
-            '.mobile-copy-btn:focus {\n' +
-            '    background: rgba(99, 102, 241, 0.2) !important;\n' +
-            '    color: #818cf8 !important;\n' +
-            '}\n' +
-            '                \n' +
-            '.mobile-copy-btn svg {\n' +
-            '    width: 16px !important;\n' +
-            '    height: 16px !important;\n' +
-            '    stroke: currentColor !important;\n' +
-            '    stroke-width: 2 !important;\n' +
-            '    fill: none !important;\n' +
-            '}\n' +
-            '                \n' +
-            'blockquote {\n' +
-            '    border-left: 3px solid #6366f1 !important;\n' +
-            '    background: rgba(99, 102, 241, 0.08) !important;\n' +
-            '    color: #c8c8cc !important;\n' +
-            '    padding: 8px 12px !important;\n' +
-            '    margin: 8px 0 !important;\n' +
-            '}\n' +
-            '\n' +
-            'table {\n' +
-            '    border-collapse: collapse !important;\n' +
-            '    width: 100% !important;\n' +
-            '    border: 1px solid #2a2b32 !important;\n' +
-            '}\n' +
-            'th, td {\n' +
-            '    border: 1px solid #2a2b32 !important;\n' +
-            '    padding: 8px !important;\n' +
-            '    color: #e0e0e4 !important;\n' +
-            '}\n' +
-            '\n' +
-            '::-webkit-scrollbar {\n' +
-            '    width: 0 !important;\n' +
-            '}\n' +
-            '                \n' +
-            '[style*="background-color: rgb(255, 255, 255)"],\n' +
-            '[style*="background-color: white"],\n' +
-            '[style*="background: white"],\n' +
-            '[style*="background-color: rgb(249"],\n' +
-            '[style*="background-color: rgb(248"],\n' +
-            '[style*="background-color: rgb(244"],\n' +
-            '[style*="background-color: rgb(243"],\n' +
-            '[style*="background-color: rgb(241"],\n' +
-            '[style*="background-color: rgb(31"],\n' +
-            '[style*="background-color: rgb(30"],\n' +
-            '[style*="background-color: rgb(15"],\n' +
-            '[style*="background-color: rgb(17"],\n' +
-            '[style*="background-color: rgb(24"],\n' +
-            '[style*="background-color: rgb(32"],\n' +
-            '[style*="background-color: rgb(38"],\n' +
-            '[class*="bg-gray"], [class*="bg-slate"],\n' +
-            '[class*="bg-neutral"], [class*="bg-zinc"],\n' +
-            '[class*="bg-ide-"], [class*="from-ide-"],\n' +
-            '[class*="bg-white"] {\n' +
-            '    background-color: transparent !important;\n' +
-            '}\n' +
-            `${snapshotRootSelector} > div > div,\n` +
-            `${snapshotRootSelector} .composer-message-group,\n` +
-            `${snapshotRootSelector} .composer-rendered-message,\n` +
-            `${snapshotRootSelector} .markdown-root {\n` +
-            '    background-color: transparent !important;\n' +
-            '}\n' +
-            '\n' +
-            '/* IDE-style framed panels (command blocks) */\n' +
-            '.rounded-lg {\n' +
-            '    background-color: rgba(128, 128, 128, 0.06) !important;\n' +
-            '    border: 1px solid var(--border-color, #2a2b32) !important;\n' +
-            '    border-radius: 8px !important;\n' +
-            '    padding: 8px !important;\n' +
-            '    margin: 4px 0 !important;\n' +
-            '}\n' +
-            '/* Thinking/thought sections - no frame like IDE */\n' +
-            '.rounded-lg:has(> details), .rounded-lg:has(> summary),\n' +
-            'details.rounded-lg, .rounded-lg > details {\n' +
-            '    background-color: transparent !important;\n' +
-            '    border: none !important;\n' +
-            '    padding: 0 !important;\n' +
-            '    margin: 0 !important;\n' +
-            '}\n' +
-            '/* Thinking/thought toggle section (.isolate wrapper) */\n' +
-            '.isolate, .isolate > button {\n' +
-            '    background-color: transparent !important;\n' +
-            '    border: none !important;\n' +
-            '    padding: 0 !important;\n' +
-            '    margin: 0 !important;\n' +
-            '    border-radius: 0 !important;\n' +
-            '    outline: none !important;\n' +
-            '    box-shadow: none !important;\n' +
-            '}\n' +
-            '/* Good/Bad feedback row - no frame */\n' +
-            '.rounded-lg:has([data-tooltip-id^="up-"], [data-tooltip-id^="down-"]) {\n' +
-            '    background-color: transparent !important;\n' +
-            '    border: none !important;\n' +
-            '    padding: 0 !important;\n' +
-            '    margin: 0 !important;\n' +
-            '}\n' +
-            '\n' +
-            '/* User message bubble */\n' +
-            '[data-role="user"] {\n' +
-            '    background-color: rgba(128, 128, 128, 0.1) !important;\n' +
-            '    border-radius: 12px !important;\n' +
-            '    padding: 10px 14px !important;\n' +
-            '    margin-bottom: 4px !important;\n' +
-            '}\n' +
-            '/* Remove inner background/border inside user message */\n' +
-            '[data-role="user"] .rounded-lg,\n' +
-            '[data-role="user"] [class*="bg-gray-500"] {\n' +
-            '    background-color: transparent !important;\n' +
-            '    border: none !important;\n' +
-            '    padding: 0 !important;\n' +
-            '    margin: 0 !important;\n' +
-            '}\n' +
-            '\n' +
-            '/* IDE text color class sync */\n' +
-            '.text-ide-text-color {\n' +
-            '    color: var(--text-main) !important;\n' +
-            '}';
+        const snapshotRootScope = `#chatContent :is(${snapshotRootSelector})`;
+        const darkModeOverrides = `/* --- BASE SNAPSHOT CSS --- */
+${data.css || ''}
+
+/* --- THEME OVERRIDES --- */
+${snapshotRootScope} {
+    background-color: transparent !important;
+    color: var(--text-main) !important;
+    font-family: 'Inter', system-ui, sans-serif !important;
+    position: relative !important;
+    height: auto !important;
+    width: 100% !important;
+}
+
+${snapshotRootScope} .monaco-pane-view,
+${snapshotRootScope} .monaco-scrollable-element,
+${snapshotRootScope} .split-view-container,
+${snapshotRootScope} .split-view-view,
+${snapshotRootScope} .pane,
+${snapshotRootScope} .pane-body,
+${snapshotRootScope} .conversations,
+${snapshotRootScope} .composer-messages-container,
+${snapshotRootScope} .scrollable-div-container {
+    position: static !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+}
+
+${snapshotRootScope} .composer-human-ai-pair-container {
+    min-height: 0 !important;
+    padding-bottom: 0 !important;
+    gap: 10px !important;
+}
+
+${snapshotRootScope} [style*="position: sticky"] {
+    position: static !important;
+    top: auto !important;
+}
+
+${snapshotRootScope} [style*="position: absolute"],
+${snapshotRootScope} [style*="position: fixed"],
+${snapshotRootScope} [data-headlessui-state],
+${snapshotRootScope} [id*="headlessui"] {
+    position: absolute !important;
+}
+
+${snapshotRootScope} [style*="color: rgb(0, 0, 0)"],
+${snapshotRootScope} [style*="color: black"],
+${snapshotRootScope} [style*="color:#000"],
+${snapshotRootScope} [style*="color: #000"],
+${snapshotRootScope} [style*="color: rgb(3"],
+${snapshotRootScope} [style*="color: rgb(2"],
+${snapshotRootScope} [style*="color: rgb(1, "],
+${snapshotRootScope} [style*="color: rgb(5, "],
+${snapshotRootScope} [style*="color: rgb(10,"],
+${snapshotRootScope} [style*="color: rgb(15,"],
+${snapshotRootScope} [style*="color: rgb(20,"],
+${snapshotRootScope} [style*="color: rgb(25,"],
+${snapshotRootScope} [style*="color: rgb(30,"],
+${snapshotRootScope} [style*="color: rgb(35,"],
+${snapshotRootScope} [style*="color: rgb(40,"],
+${snapshotRootScope} [style*="color: rgb(45,"],
+${snapshotRootScope} [style*="color: rgb(50,"],
+${snapshotRootScope} [style*="color: rgb(55,"],
+${snapshotRootScope} [style*="color: rgb(60,"],
+${snapshotRootScope} [style*="color: rgb(65,"],
+${snapshotRootScope} [style*="color: rgb(70,"],
+${snapshotRootScope} [style*="color: rgb(75,"] {
+    color: var(--text-main) !important;
+}
+
+${snapshotRootScope} .markdown-root a[href] {
+    color: #8fa3ff !important;
+    text-decoration: underline !important;
+}
+
+${snapshotRootScope} .markdown-root,
+${snapshotRootScope} .markdown-root :not(a):not(svg):not(img),
+${snapshotRootScope} [data-message-role="human"] :not(a):not(svg):not(img) {
+    color: var(--text-main) !important;
+    text-decoration: none !important;
+}
+
+${snapshotRootScope} img[src^="/c:"],
+${snapshotRootScope} img[src^="/C:"],
+${snapshotRootScope} img[src*="AppData"] {
+    display: none !important;
+}
+
+${snapshotRootScope} img,
+${snapshotRootScope} svg {
+    display: inline !important;
+    vertical-align: middle !important;
+}
+
+${snapshotRootScope} div:has(> img[src^="data:"]),
+${snapshotRootScope} div:has(> img[alt]),
+${snapshotRootScope} span:has(> img) {
+    display: inline !important;
+    vertical-align: middle !important;
+}
+
+${snapshotRootScope} [class*="inline-flex"],
+${snapshotRootScope} [class*="inline-block"],
+${snapshotRootScope} [class*="items-center"]:has(img) {
+    display: inline-flex !important;
+    vertical-align: middle !important;
+}
+
+${snapshotRootScope} :not(pre) > code {
+    padding: 0px 2px !important;
+    border-radius: 2px !important;
+    background-color: rgba(255, 255, 255, 0.08) !important;
+    font-size: 0.82em !important;
+    line-height: 1 !important;
+    white-space: normal !important;
+}
+
+${snapshotRootScope} pre,
+${snapshotRootScope} code,
+${snapshotRootScope} .monaco-editor-background,
+${snapshotRootScope} [class*="terminal"] {
+    background-color: #1a1b20 !important;
+    color: #e0e0e4 !important;
+    font-family: 'JetBrains Mono', monospace !important;
+    border-radius: 6px;
+    border: 1px solid #2a2b32;
+}
+
+${snapshotRootScope} pre {
+    position: relative !important;
+    white-space: pre-wrap !important;
+    word-break: break-word !important;
+    padding: 8px 10px !important;
+    margin: 8px 0 !important;
+    display: block !important;
+    width: 100% !important;
+}
+
+${snapshotRootScope} pre.has-copy-btn {
+    padding-right: 28px !important;
+}
+
+${snapshotRootScope} pre.single-line-pre {
+    display: inline-block !important;
+    width: auto !important;
+    max-width: 100% !important;
+    padding: 0px 4px !important;
+    margin: 0px !important;
+    vertical-align: middle !important;
+    font-size: 0.85em !important;
+}
+
+${snapshotRootScope} pre.single-line-pre > code {
+    display: inline !important;
+    white-space: nowrap !important;
+}
+
+${snapshotRootScope} pre:not(.single-line-pre) > code {
+    display: block !important;
+    width: 100% !important;
+    overflow-x: auto !important;
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+${snapshotRootScope} .mobile-copy-btn {
+    position: absolute !important;
+    top: 2px !important;
+    right: 2px !important;
+    background: rgba(26, 27, 32, 0.6) !important;
+    color: #8a8d92 !important;
+    border: none !important;
+    width: 24px !important;
+    height: 24px !important;
+    padding: 0 !important;
+    cursor: pointer !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    border-radius: 4px !important;
+    transition: all 0.2s ease !important;
+    -webkit-tap-highlight-color: transparent !important;
+    z-index: 10 !important;
+    margin: 0 !important;
+}
+
+${snapshotRootScope} .mobile-copy-btn:hover,
+${snapshotRootScope} .mobile-copy-btn:focus {
+    background: rgba(99, 102, 241, 0.2) !important;
+    color: #818cf8 !important;
+}
+
+${snapshotRootScope} .mobile-copy-btn svg {
+    width: 16px !important;
+    height: 16px !important;
+    stroke: currentColor !important;
+    stroke-width: 2 !important;
+    fill: none !important;
+}
+
+${snapshotRootScope} blockquote {
+    border-left: 3px solid #6366f1 !important;
+    background: rgba(99, 102, 241, 0.08) !important;
+    color: #c8c8cc !important;
+    padding: 8px 12px !important;
+    margin: 8px 0 !important;
+}
+
+${snapshotRootScope} table {
+    border-collapse: collapse !important;
+    width: 100% !important;
+    border: 1px solid #2a2b32 !important;
+}
+
+${snapshotRootScope} th,
+${snapshotRootScope} td {
+    border: 1px solid #2a2b32 !important;
+    padding: 8px !important;
+    color: #e0e0e4 !important;
+}
+
+${snapshotRootScope} ::-webkit-scrollbar {
+    width: 0 !important;
+}
+
+${snapshotRootScope} [style*="background-color: rgb(255, 255, 255)"],
+${snapshotRootScope} [style*="background-color: white"],
+${snapshotRootScope} [style*="background: white"],
+${snapshotRootScope} [style*="background-color: rgb(249"],
+${snapshotRootScope} [style*="background-color: rgb(248"],
+${snapshotRootScope} [style*="background-color: rgb(244"],
+${snapshotRootScope} [style*="background-color: rgb(243"],
+${snapshotRootScope} [style*="background-color: rgb(241"],
+${snapshotRootScope} [style*="background-color: rgb(31"],
+${snapshotRootScope} [style*="background-color: rgb(30"],
+${snapshotRootScope} [style*="background-color: rgb(15"],
+${snapshotRootScope} [style*="background-color: rgb(17"],
+${snapshotRootScope} [style*="background-color: rgb(24"],
+${snapshotRootScope} [style*="background-color: rgb(32"],
+${snapshotRootScope} [style*="background-color: rgb(38"],
+${snapshotRootScope} [class*="bg-gray"],
+${snapshotRootScope} [class*="bg-slate"],
+${snapshotRootScope} [class*="bg-neutral"],
+${snapshotRootScope} [class*="bg-zinc"],
+${snapshotRootScope} [class*="bg-ide-"],
+${snapshotRootScope} [class*="from-ide-"],
+${snapshotRootScope} [class*="bg-white"] {
+    background-color: transparent !important;
+}
+
+${snapshotRootScope} > div > div,
+${snapshotRootScope} .composer-message-group,
+${snapshotRootScope} .composer-rendered-message,
+${snapshotRootScope} .markdown-root {
+    background-color: transparent !important;
+}
+
+${snapshotRootScope} .rounded-lg {
+    background-color: rgba(128, 128, 128, 0.06) !important;
+    border: 1px solid var(--border-color, #2a2b32) !important;
+    border-radius: 8px !important;
+    padding: 8px !important;
+    margin: 4px 0 !important;
+}
+
+${snapshotRootScope} .rounded-lg:has(> details),
+${snapshotRootScope} .rounded-lg:has(> summary),
+${snapshotRootScope} details.rounded-lg,
+${snapshotRootScope} .rounded-lg > details,
+${snapshotRootScope} .isolate,
+${snapshotRootScope} .isolate > button,
+${snapshotRootScope} .rounded-lg:has([data-tooltip-id^="up-"], [data-tooltip-id^="down-"]) {
+    background-color: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border-radius: 0 !important;
+    outline: none !important;
+    box-shadow: none !important;
+}
+
+${snapshotRootScope} [data-message-role="human"] {
+    margin-left: auto !important;
+    max-width: min(78%, 720px) !important;
+}
+
+${snapshotRootScope} [data-message-role="assistant"],
+${snapshotRootScope} .composer-message-group {
+    margin-right: auto !important;
+    max-width: min(920px, 100%) !important;
+}
+
+${snapshotRootScope} [data-message-role="human"] .composer-human-message-container {
+    justify-content: flex-end !important;
+    background-color: transparent !important;
+}
+
+${snapshotRootScope} [data-message-role="human"] .composer-human-message,
+${snapshotRootScope} [data-message-role="human"] .human-message-with-todos-wrapper {
+    background-color: rgba(255, 255, 255, 0.08) !important;
+    border: 1px solid rgba(255, 255, 255, 0.06) !important;
+    border-radius: 12px !important;
+}
+
+${snapshotRootScope} [data-message-role="human"] .rounded-lg,
+${snapshotRootScope} [data-message-role="human"] [class*="bg-gray-500"] {
+    background-color: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+${snapshotRootScope} .text-ide-text-color {
+    color: var(--text-main) !important;
+}
+
+${snapshotRootScope} [style*="max-width: 740px"] {
+    max-width: min(800px, 100%) !important;
+}
+
+${snapshotRootScope} .composer-message-blur,
+${snapshotRootScope} .composer-rendered-message,
+${snapshotRootScope} .composer-message-group > div,
+${snapshotRootScope} [data-message-role="ai"],
+${snapshotRootScope} [data-message-role="tool"] {
+    opacity: 1 !important;
+}
+
+${snapshotRootScope} [data-message-role="human"][style*="position: sticky"] {
+    position: sticky !important;
+    top: 6px !important;
+    z-index: 25 !important;
+}
+
+${snapshotRootScope} .ui-step-group-header,
+${snapshotRootScope} .ui-collapsible-header {
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 4px !important;
+    font-size: 13px !important;
+    line-height: 1.4 !important;
+    letter-spacing: -0.01em !important;
+}
+
+${snapshotRootScope} .ui-collapsible-header span:first-child {
+    color: rgba(255, 255, 255, 0.72) !important;
+}
+
+${snapshotRootScope} .ui-collapsible-header span:last-of-type,
+${snapshotRootScope} .ui-collapsible-chevron,
+${snapshotRootScope} .cursor-icon {
+    color: rgba(255, 255, 255, 0.48) !important;
+    opacity: 0.7 !important;
+}
+
+${snapshotRootScope} [data-message-kind="assistant"] .markdown-root,
+${snapshotRootScope} [data-message-kind="assistant"] .markdown-root p,
+${snapshotRootScope} [data-message-kind="tool"] .markdown-root,
+${snapshotRootScope} [data-message-kind="tool"] .markdown-root p {
+    font-size: 15px !important;
+    line-height: 1.65 !important;
+    letter-spacing: -0.01em !important;
+}
+
+${snapshotRootScope} .markdown-root .space-y-4 {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 12px !important;
+}
+
+${snapshotRootScope} .composer-tool-former-message,
+${snapshotRootScope} .composer-tool-call-container,
+${snapshotRootScope} .composer-terminal-tool-call-block-container {
+    background: rgba(16, 19, 24, 0.96) !important;
+    border: 1px solid rgba(255, 255, 255, 0.06) !important;
+    border-radius: 12px !important;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02) !important;
+}
+
+${snapshotRootScope} .composer-tool-call-control-row,
+${snapshotRootScope} .composer-tool-call-left-controls {
+    display: flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+}
+
+${snapshotRootScope} .composer-run-button,
+${snapshotRootScope} .composer-tool-call-allowlist-button,
+${snapshotRootScope} .anysphere-button,
+${snapshotRootScope} .anysphere-text-button {
+    background: rgba(255, 255, 255, 0.05) !important;
+    border: 1px solid rgba(255, 255, 255, 0.06) !important;
+    border-radius: 8px !important;
+    color: #d8dde6 !important;
+    padding: 2px 8px !important;
+}
+
+${snapshotRootScope} .composer-run-button {
+    background: rgba(239, 68, 68, 0.12) !important;
+    border-color: rgba(239, 68, 68, 0.34) !important;
+    color: #f5d0d0 !important;
+}
+
+${snapshotRootScope} [data-message-role="human"] .composer-human-message,
+${snapshotRootScope} [data-message-role="human"] .human-message-with-todos-wrapper,
+${snapshotRootScope} [data-message-role="human"] .composer-human-message-container {
+    border-radius: 14px !important;
+}
+
+${snapshotRootScope} [data-message-role="human"] .composer-human-message {
+    padding: 2px !important;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02) !important;
+}
+
+${snapshotRootScope} [data-message-role="human"] .aislash-editor-input-readonly,
+${snapshotRootScope} [data-message-role="human"] [data-lexical-editor="true"] {
+    font-size: 14px !important;
+    line-height: 1.55 !important;
+}
+
+${snapshotRootScope} .composer-human-ai-pair-container {
+    gap: 12px !important;
+}
+
+${snapshotRootScope} [style*="padding-inline: 9px"] {
+    padding-inline: 0 !important;
+}
+
+${snapshotRootScope} .pane-header,
+${snapshotRootScope} #composer-toolbar-section,
+${snapshotRootScope} [aria-label="New Chat Section"] {
+    display: none !important;
+}
+
+${snapshotRootScope} .composer-message-group,
+${snapshotRootScope} [data-message-kind="assistant"],
+${snapshotRootScope} [data-message-kind="tool"] {
+    padding-left: 8px !important;
+    padding-right: 8px !important;
+}`;
         styleTag.textContent = darkModeOverrides;
     }
 
@@ -1455,11 +1638,16 @@ function hideChatHistory() {
     }
 }
 
-historyBtn.addEventListener('click', (e) => {
-    e.stopPropagation(); // Prevent settings dropdown from catching this click
-    settingsDropdown.classList.remove('open'); // Close settings dropdown
+function openHistoryPanel(e) {
+    if (e) e.stopPropagation();
+    settingsDropdown.classList.remove('open');
     showChatHistory();
-});
+}
+
+historyBtn.addEventListener('click', openHistoryPanel);
+if (historyQuickBtn) {
+    historyQuickBtn.addEventListener('click', openHistoryPanel);
+}
 
 if (homeRecentsList) {
     homeRecentsList.addEventListener('click', (e) => {
@@ -1599,6 +1787,102 @@ function buildDropdownMenu(menu, title, options, currentValue, descriptions = {}
     });
 }
 
+function normalizeModelDropdownState(data = {}) {
+    const current = data.current && data.current !== 'Unknown' ? data.current : currentModel;
+    const autoEnabled = typeof data.autoEnabled === 'boolean' ? data.autoEnabled : /^auto$/i.test(current);
+    const autoAvailable = typeof data.autoAvailable === 'boolean' ? data.autoAvailable : autoEnabled;
+    const options = Array.isArray(data.options)
+        ? data.options.filter((value) => value && !(autoAvailable && /^auto$/i.test(value)))
+        : [];
+
+    return {
+        current,
+        options,
+        autoAvailable,
+        autoEnabled,
+        autoLabel: data.autoLabel || 'Auto',
+        autoDescription: data.autoDescription || 'Balanced quality and speed, recommended for most tasks',
+        searchPlaceholder: data.searchPlaceholder || 'Search models'
+    };
+}
+
+function renderModelOptionsList(listEl, state, filterText = '') {
+    if (!listEl) return;
+    listEl.innerHTML = '';
+
+    const normalizedFilter = filterText.trim().toLowerCase();
+    const filteredOptions = state.options.filter((value) => !normalizedFilter || value.toLowerCase().includes(normalizedFilter));
+
+    if (!filteredOptions.length) {
+        const empty = document.createElement('div');
+        empty.className = 'model-empty-state';
+        empty.textContent = normalizedFilter ? 'No matching models' : 'No additional models available';
+        listEl.appendChild(empty);
+        return;
+    }
+
+    filteredOptions.forEach((value) => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'dropdown-option model-option' + (value === state.current ? ' active' : '');
+        item.dataset.value = value;
+        item.innerHTML = `<span class="model-option-name">${escapeHtml(value)}</span>`;
+        listEl.appendChild(item);
+    });
+}
+
+function buildModelDropdownMenu(menu, state) {
+    menu.innerHTML = '';
+
+    const panel = document.createElement('div');
+    panel.className = 'model-menu-panel';
+
+    const searchWrap = document.createElement('div');
+    searchWrap.className = 'model-search-wrap';
+    searchWrap.innerHTML = `
+        <input
+            type="search"
+            class="model-search-input"
+            placeholder="${escapeHtml(state.searchPlaceholder)}"
+            aria-label="Search models"
+            autocomplete="off"
+            spellcheck="false"
+        >
+    `;
+    panel.appendChild(searchWrap);
+
+    if (state.autoAvailable) {
+        const autoRow = document.createElement('button');
+        autoRow.type = 'button';
+        autoRow.className = 'model-auto-row' + (state.autoEnabled ? ' active' : '');
+        autoRow.dataset.value = 'Auto';
+        autoRow.innerHTML = `
+            <span class="model-auto-copy">
+                <span class="model-auto-title">${escapeHtml(state.autoLabel)}</span>
+                <span class="model-auto-desc">${escapeHtml(state.autoDescription)}</span>
+            </span>
+            <span class="model-auto-toggle${state.autoEnabled ? ' is-on' : ''}" aria-hidden="true">
+                <span class="model-auto-toggle-knob"></span>
+            </span>
+        `;
+        panel.appendChild(autoRow);
+    }
+
+    const listEl = document.createElement('div');
+    listEl.className = 'model-options-list';
+    panel.appendChild(listEl);
+    menu.appendChild(panel);
+
+    renderModelOptionsList(listEl, state);
+
+    const searchInput = searchWrap.querySelector('.model-search-input');
+    if (searchInput) {
+        searchInput.addEventListener('input', () => {
+            renderModelOptionsList(listEl, state, searchInput.value);
+        });
+    }
+}
+
 function setDropdownLoading(menu, title) {
     menu.innerHTML = `<div class="dropdown-title">${title}</div><div class="dropdown-option" data-value="">Loading...</div>`;
 }
@@ -1640,26 +1924,34 @@ async function openModelDropdown() {
         return;
     }
 
-    const badgeMap = Object.fromEntries(MODEL_FALLBACK_OPTIONS.filter(item => item.badge).map(item => [item.name, item.badge]));
     setDropdownLoading(modelMenu, 'Model');
     toggleDropdown(modelMenu, modelBtn);
 
     try {
         const data = await fetchDropdownOptions('model');
-        const options = Array.isArray(data.options) && data.options.length
-            ? data.options
-            : (data.current && data.current !== 'Unknown' ? [data.current] : [currentModel].filter(Boolean));
-        availableModels = options;
+        const fallbackOptions = data.current && data.current !== 'Unknown' ? [data.current] : [currentModel].filter(Boolean);
+        const normalized = normalizeModelDropdownState({
+            ...data,
+            options: Array.isArray(data.options) && data.options.length ? data.options : fallbackOptions
+        });
 
-        if (data.current && data.current !== 'Unknown') {
-            currentModel = data.current;
-            modelText.textContent = data.current;
+        availableModels = normalized.options;
+        lastModelDropdownState = normalized;
+
+        if (normalized.current && normalized.current !== 'Unknown') {
+            currentModel = normalized.current;
+            modelText.textContent = normalized.current;
         }
 
-        buildDropdownMenu(modelMenu, 'Model', options, currentModel, {}, badgeMap);
+        buildModelDropdownMenu(modelMenu, normalized);
     } catch (e) {
-        availableModels = [currentModel].filter(Boolean);
-        buildDropdownMenu(modelMenu, 'Model', availableModels, currentModel, {}, badgeMap);
+        const normalized = normalizeModelDropdownState({
+            current: currentModel,
+            options: [currentModel].filter(Boolean)
+        });
+        availableModels = normalized.options;
+        lastModelDropdownState = normalized;
+        buildModelDropdownMenu(modelMenu, normalized);
     }
 }
 
@@ -1701,14 +1993,9 @@ modeMenu.addEventListener('click', async (e) => {
 // --- Model dropdown ---
 modelBtn.addEventListener('click', openModelDropdown);
 
-modelMenu.addEventListener('click', async (e) => {
-    const opt = e.target.closest('.dropdown-option');
-    if (!opt) return;
-    const model = opt.dataset.value;
+async function applyModelSelection(model, prev = currentModel || modelText.textContent) {
     if (!model) return;
-    closeAllDropdowns();
 
-    const prev = modelText.textContent;
     modelText.textContent = 'Setting...';
     try {
         const res = await fetchWithAuth('/set-model', {
@@ -1721,16 +2008,42 @@ modelMenu.addEventListener('click', async (e) => {
             currentModel = data.currentModel || model;
             modelText.textContent = currentModel;
             updateWorkspaceChrome({ model: currentModel });
-            modelMenu.querySelectorAll('.dropdown-option').forEach(o => {
-                o.classList.toggle('active', o.dataset.value === currentModel);
-            });
-        } else {
-            alert('Error: ' + (data.error || 'Unknown'));
-            modelText.textContent = currentModel || prev;
+            if (lastModelDropdownState) {
+                lastModelDropdownState.current = currentModel;
+                lastModelDropdownState.autoEnabled = /^auto$/i.test(currentModel);
+            }
+            return true;
         }
+
+        alert('Error: ' + (data.error || 'Unknown'));
     } catch (e) {
-        modelText.textContent = currentModel || prev;
+        console.error('Model selection failed:', e);
     }
+
+    modelText.textContent = currentModel || prev;
+    return false;
+}
+
+modelMenu.addEventListener('click', async (e) => {
+    const autoRow = e.target.closest('.model-auto-row');
+    if (autoRow) {
+        e.preventDefault();
+        const autoState = lastModelDropdownState || normalizeModelDropdownState({ current: currentModel, options: availableModels });
+        if (!autoState.autoEnabled) {
+            const success = await applyModelSelection('Auto');
+            if (success) {
+                closeAllDropdowns();
+            }
+        }
+        return;
+    }
+
+    const opt = e.target.closest('.dropdown-option.model-option');
+    if (!opt) return;
+    const model = opt.dataset.value;
+    if (!model) return;
+    closeAllDropdowns();
+    await applyModelSelection(model);
 });
 
 // --- Viewport / Keyboard Handling ---
