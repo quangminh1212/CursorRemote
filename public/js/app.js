@@ -76,9 +76,7 @@ const isLoopbackHost = LOOPBACK_HOSTS.has(window.location.hostname);
 const DEFAULT_COMPOSER_PLACEHOLDER = 'Ask anything, @ to mention, / for workflows';
 const HOME_COMPOSER_PLACEHOLDER = 'Add a follow-up';
 const DEFAULT_APP_TITLE = appBrandTitle?.textContent || 'Cursor Remote';
-const HOME_APP_TITLE = 'Upgrade Pro';
 const DEFAULT_NEW_CHAT_LABEL = newChatLabel?.textContent || 'New Chat';
-const HOME_TAB_LABEL = 'c';
 
 function setTextContent(element, value) {
     if (element) element.textContent = value;
@@ -86,6 +84,13 @@ function setTextContent(element, value) {
 
 function normalizeChatTitle(title) {
     return typeof title === 'string' ? title.trim() : '';
+}
+
+function chatTitlesMatch(left, right) {
+    const a = normalizeChatTitle(left).toLowerCase();
+    const b = normalizeChatTitle(right).toLowerCase();
+    if (!a || !b) return false;
+    return a === b || a.includes(b) || b.includes(a);
 }
 
 function getTransportLabel() {
@@ -103,6 +108,11 @@ function syncShellPromptFromComposer(value = messageInput.value) {
 function extractActiveChatTitleFromSnapshot() {
     if (!chatContent) return '';
 
+    const activeTabLabel = chatContent.querySelector('.snapshot-chat-tab.active .snapshot-chat-tab-label');
+    if (activeTabLabel) {
+        return normalizeChatTitle(activeTabLabel.textContent || '');
+    }
+
     const titleSource = chatContent.querySelector('[data-message-role="human"][style*="position: sticky"]')
         || chatContent.querySelector('[data-message-role="human"]');
     if (!titleSource) return '';
@@ -113,6 +123,37 @@ function extractActiveChatTitleFromSnapshot() {
         .filter(Boolean);
 
     return lines[0] || '';
+}
+
+function buildSnapshotTabsHtml(tabs = [], activeTitle = '') {
+    const normalizedTabs = Array.isArray(tabs)
+        ? tabs
+            .map((tab) => ({
+                title: normalizeChatTitle(tab?.title),
+                active: !!tab?.active
+            }))
+            .filter((tab) => tab.title)
+        : [];
+
+    if (!normalizedTabs.length) return '';
+
+    const resolvedActiveTitle = normalizeChatTitle(activeTitle);
+    const hasExplicitActive = normalizedTabs.some((tab) => tab.active);
+
+    return `
+        <div class="snapshot-chat-tabs" aria-label="Cursor chat tabs">
+            <div class="snapshot-chat-tabs-track">
+                ${normalizedTabs.map((tab) => {
+                    const isActive = tab.active || (!hasExplicitActive && resolvedActiveTitle && chatTitlesMatch(tab.title, resolvedActiveTitle));
+                    return `
+                        <div class="snapshot-chat-tab${isActive ? ' active' : ''}" title="${escapeHtml(tab.title)}">
+                            <span class="snapshot-chat-tab-label">${escapeHtml(tab.title)}</span>
+                        </div>
+                    `;
+                }).join('')}
+            </div>
+        </div>
+    `;
 }
 
 function updateCursorShellStatus({ connected, running, snapshotReady }) {
@@ -137,47 +178,7 @@ function updateCursorShellStatus({ connected, running, snapshotReady }) {
 }
 
 function renderHomeShell() {
-    chatContent.innerHTML = `
-        <div class="cursor-shell-empty">
-            <div class="cursor-shell-search">
-                <input
-                    id="shellPromptInput"
-                    class="cursor-shell-search-input"
-                    type="text"
-                    spellcheck="false"
-                    autocomplete="off"
-                    aria-label="Cursor shell prompt"
-                    value="${escapeHtml(messageInput.value || 'c')}"
-                >
-            </div>
-            <div class="cursor-shell-status-line">
-                <span class="cursor-shell-status-text" id="shellStatusText">Waiting for extension host</span>
-                <button type="button" class="cursor-shell-status-action" id="shellStatusAction">Cancel</button>
-            </div>
-            <div class="cursor-shell-spacer" aria-hidden="true"></div>
-        </div>
-    `;
-
-    const shellInput = document.getElementById('shellPromptInput');
-    if (shellInput) {
-        shellInput.addEventListener('input', () => {
-            messageInput.value = shellInput.value;
-            messageInput.dispatchEvent(new Event('input', { bubbles: true }));
-        });
-    }
-
-    const statusAction = document.getElementById('shellStatusAction');
-    if (statusAction) {
-        statusAction.addEventListener('click', () => {
-            if (document.body.classList.contains('agent-running')) {
-                stopBtn.click();
-            } else {
-                messageInput.value = '';
-                messageInput.dispatchEvent(new Event('input', { bubbles: true }));
-                if (shellInput) shellInput.value = '';
-            }
-        });
-    }
+    chatContent.innerHTML = '';
 }
 
 function updateWorkspaceChrome(overrides = {}) {
@@ -333,6 +334,10 @@ async function refreshActiveChatTitle(force = false) {
     try {
         const res = await fetchWithAuth('/chat-history');
         const data = await res.json();
+        if (data?.activeTitle) {
+            setActiveChatTitle(data.activeTitle);
+            return;
+        }
         updateActiveChatTitleFromHistory(data.chats, force);
     } catch (e) {
         if (force) {
@@ -387,6 +392,10 @@ async function fetchAppState() {
         if (data.model && data.model !== 'Unknown') {
             modelText.textContent = data.model;
             currentModel = data.model;
+        }
+
+        if (data.activeChatTitle) {
+            setActiveChatTitle(data.activeChatTitle);
         }
 
         // Running state sync - toggle send/stop button
@@ -601,8 +610,8 @@ function setHomeScreen(enabled) {
     refreshBtn.setAttribute('data-tooltip', enabled ? 'New Chat' : 'Refresh');
     fullscreenBtn.setAttribute('aria-label', enabled ? 'Close' : document.fullscreenElement ? 'Exit Fullscreen' : 'Fullscreen');
     fullscreenBtn.setAttribute('data-tooltip', enabled ? 'Close' : document.fullscreenElement ? 'Exit Fullscreen' : 'Fullscreen');
-    if (newChatLabel) newChatLabel.textContent = enabled ? HOME_TAB_LABEL : DEFAULT_NEW_CHAT_LABEL;
-    if (appBrandTitle) appBrandTitle.textContent = enabled ? HOME_APP_TITLE : DEFAULT_APP_TITLE;
+    if (newChatLabel) newChatLabel.textContent = DEFAULT_NEW_CHAT_LABEL;
+    if (appBrandTitle) appBrandTitle.textContent = DEFAULT_APP_TITLE;
 
     if (enabled) {
         setTextContent(homeContextAgent, 'Cursor');
@@ -740,24 +749,15 @@ function scheduleRender() {
     });
 }
 
-function isEmptyComposerSnapshot(data) {
-    const html = typeof data?.html === 'string' ? data.html : '';
-    if (!html) return false;
-    return html.includes('composer-bar editor empty');
-}
-
 // --- Core render function (used by both WS and HTTP paths) ---
 function renderSnapshot(data) {
     chatIsOpen = true;
     hasSnapshotLoaded = true;
 
-    if (isEmptyComposerSnapshot(data)) {
-        showEmptyState();
-        return;
-    }
-
     setHomeScreen(false);
-    if (!activeChatTitle) {
+    if (data.activeChatTitle) {
+        setActiveChatTitle(data.activeChatTitle);
+    } else if (!activeChatTitle) {
         refreshActiveChatTitle();
     }
 
@@ -1283,10 +1283,12 @@ ${snapshotRootScope} [data-message-kind="tool"] {
     }
 
     // --- HTML UPDATE (skip if unchanged to prevent text jittering) ---
-    const htmlHash = fastHash(data.html);
+    const snapshotTabsHtml = buildSnapshotTabsHtml(data.chatTabs, data.activeChatTitle);
+    const renderedHtml = `${snapshotTabsHtml}${data.html}`;
+    const htmlHash = fastHash(renderedHtml);
     if (htmlHash !== lastRenderedHtmlHash) {
         lastRenderedHtmlHash = htmlHash;
-        chatContent.innerHTML = data.html;
+        chatContent.innerHTML = renderedHtml;
 
         // Ensure dark mode classes are set for Tailwind dark variant activation
         chatContent.classList.add('dark');
@@ -1297,7 +1299,7 @@ ${snapshotRootScope} [data-message-kind="tool"] {
         // Add mobile copy buttons to all code blocks
         addMobileCopyButtons();
 
-        const snapshotTitle = extractActiveChatTitleFromSnapshot();
+        const snapshotTitle = normalizeChatTitle(data.activeChatTitle) || extractActiveChatTitleFromSnapshot();
         if (snapshotTitle) {
             setActiveChatTitle(snapshotTitle);
         }
@@ -1852,7 +1854,11 @@ async function showChatHistory() {
     try {
         const res = await fetchWithAuth('/chat-history');
         const data = await res.json();
-        updateActiveChatTitleFromHistory(data.chats, true);
+        if (data?.activeTitle) {
+            setActiveChatTitle(data.activeTitle);
+        } else {
+            updateActiveChatTitleFromHistory(data.chats, true);
+        }
 
         if (data.error) {
             historyList.innerHTML = `
@@ -1873,7 +1879,7 @@ async function showChatHistory() {
             return;
         }
 
-        const chats = data.chats || [];
+        const chats = Array.isArray(data.chats) ? data.chats.slice() : [];
         if (chats.length === 0) {
             historyList.innerHTML = `
                 <div class="history-state-container">
@@ -1884,6 +1890,15 @@ async function showChatHistory() {
             `;
             applyHistoryStateIcon('empty');
             return;
+        }
+
+        const activeTitle = normalizeChatTitle(data.activeTitle);
+        if (activeTitle) {
+            const activeIndex = chats.findIndex((chat) => chatTitlesMatch(chat?.title, activeTitle));
+            if (activeIndex > 0) {
+                const [activeChat] = chats.splice(activeIndex, 1);
+                chats.unshift(activeChat);
+            }
         }
 
         // Helper: relative time
@@ -2008,7 +2023,7 @@ async function checkChatStatus() {
     try {
         const res = await fetchWithAuth('/chat-status');
         const data = await res.json();
-        const shouldShowHomeScreen = !data.hasChat || !data.hasMessages;
+        const shouldShowHomeScreen = !data.hasChat && !data.editorFound;
 
         chatIsOpen = data.hasChat || data.editorFound;
 
@@ -2016,6 +2031,9 @@ async function checkChatStatus() {
             showEmptyState();
         } else {
             setHomeScreen(false);
+            if (!hasSnapshotLoaded) {
+                loadSnapshot();
+            }
             if (!activeChatTitle) {
                 refreshActiveChatTitle();
             }
