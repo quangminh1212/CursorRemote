@@ -780,13 +780,13 @@ body {
     transform: scale(0.96);
 }
 
-.toolbar-chip svg {
+.toolbar-chip > .toolbar-chip-caret {
     opacity: 0.5;
     flex-shrink: 0;
     transition: transform 0.2s;
 }
 
-.toolbar-chip.open svg {
+.toolbar-chip.open > .toolbar-chip-caret {
     transform: rotate(180deg);
 }
 
@@ -3309,12 +3309,19 @@ body.home-screen #modelBtn {
     gap: 4px;
 }
 
-body.home-screen #modeBtn::before {
-    content: '\221e';
-    display: block;
-    font-size: 15px;
-    line-height: 1;
+body.home-screen .mode-chip-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
     color: #cdd0d6;
+    flex-shrink: 0;
+}
+
+body.home-screen .mode-chip-icon svg {
+    width: 14px;
+    height: 14px;
 }
 
 body.home-screen #modeText,
@@ -3330,8 +3337,8 @@ body.home-screen #modeText {
     text-overflow: clip;
 }
 
-body.home-screen #modeBtn svg,
-body.home-screen #modelBtn svg {
+body.home-screen #modeBtn > .toolbar-chip-caret,
+body.home-screen #modelBtn > .toolbar-chip-caret {
     order: 3;
     width: 10px;
     height: 10px;
@@ -4136,11 +4143,18 @@ body:not(.home-screen) #modelBtn {
     gap: 4px;
 }
 
-body:not(.home-screen) #modeBtn::before {
-    content: '\221e';
-    display: block;
-    font-size: 14px;
-    line-height: 1;
+body:not(.home-screen) .mode-chip-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 13px;
+    height: 13px;
+    flex-shrink: 0;
+}
+
+body:not(.home-screen) .mode-chip-icon svg {
+    width: 13px;
+    height: 13px;
 }
 
 body:not(.home-screen) #modeText,
@@ -4154,8 +4168,8 @@ body:not(.home-screen) #modeText {
     text-overflow: clip;
 }
 
-body:not(.home-screen) #modeBtn svg,
-body:not(.home-screen) #modelBtn svg {
+body:not(.home-screen) #modeBtn > .toolbar-chip-caret,
+body:not(.home-screen) #modelBtn > .toolbar-chip-caret {
     order: 3;
     width: 9px;
     height: 9px;

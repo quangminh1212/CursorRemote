@@ -357,6 +357,7 @@ const modelMenu = document.getElementById('modelMenu');
 const modeDropdown = document.getElementById('modeDropdown');
 const modelDropdown = document.getElementById('modelDropdown');
 const dropdownBackdrop = document.getElementById('dropdownBackdrop');
+const modeIcon = document.getElementById('modeIcon');
 const modeText = document.getElementById('modeText');
 const modelText = document.getElementById('modelText');
 const historyLayer = document.getElementById('historyLayer');
@@ -792,6 +793,9 @@ function getModeIconSvg(iconName) {
 function setCurrentModeValue(value) {
     const displayValue = getModeDisplayLabel(value);
     currentMode = displayValue;
+    if (modeIcon) {
+        modeIcon.innerHTML = getModeIconSvg(getModeIconName(displayValue));
+    }
     modeText.textContent = displayValue;
     modeBtn.dataset.mode = displayValue.toLowerCase();
     return displayValue;
