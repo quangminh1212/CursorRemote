@@ -44,6 +44,7 @@ const statusText = document.getElementById('statusText');
 const refreshBtn = document.getElementById('refreshBtn');
 const stopBtn = document.getElementById('stopBtn');
 const newChatBtn = document.getElementById('newChatBtn');
+const newChatLabel = newChatBtn?.querySelector('.new-chat-label');
 const historyBtn = document.getElementById('historyBtn');
 const historyQuickBtn = document.getElementById('historyQuickBtn');
 const attachBtn = document.getElementById('attachBtn');
@@ -65,6 +66,7 @@ const sidebarConnectionTitle = document.getElementById('sidebarConnectionTitle')
 const sidebarConnectionDetail = document.getElementById('sidebarConnectionDetail');
 const sidebarProtocolChip = document.getElementById('sidebarProtocolChip');
 const sidebcrThemeChip = document.getElementById('sidebcrThemeChip');
+const appBrandTitle = document.querySelector('.app-brand-title');
 const sidebarModeText = document.getElementById('sidebarModeText');
 const sidebarModelText = document.getElementById('sidebarModelText');
 const sidebarTransportText = document.getElementById('sidebarTransportText');
@@ -73,6 +75,10 @@ const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
 const isLoopbackHost = LOOPBACK_HOSTS.has(window.location.hostname);
 const DEFAULT_COMPOSER_PLACEHOLDER = 'Ask anything, @ to mention, / for workflows';
 const HOME_COMPOSER_PLACEHOLDER = 'Add a follow-up';
+const DEFAULT_APP_TITLE = appBrandTitle?.textContent || 'Cursor Remote';
+const HOME_APP_TITLE = 'Upgrade Pro';
+const DEFAULT_NEW_CHAT_LABEL = newChatLabel?.textContent || 'New Chat';
+const HOME_TAB_LABEL = 'c';
 
 function setTextContent(element, value) {
     if (element) element.textContent = value;
@@ -428,14 +434,14 @@ function getModeIconName(value = '') {
 }
 
 function getModeIconSvg(iconName) {
-    const common = 'width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"';
+    const common = 'width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"';
     switch (iconName) {
         case 'plan':
             return `<svg ${common}><circle cx="3" cy="4" r="1"></circle><circle cx="3" cy="8" r="1"></circle><circle cx="3" cy="12" r="1"></circle><path d="M6 4h7"></path><path d="M6 8h7"></path><path d="M6 12h7"></path></svg>`;
         case 'debug':
-            return `<svg ${common}><path d="M6.5 2.5h3"></path><path d="M5.5 5.5h5l1.2 1.5v2.2L10.4 12h-4.8L4.3 9.2V7z"></path><path d="M3.3 6.2 2 5"></path><path d="m12.7 6.2 1.3-1.2"></path><path d="M8 5.5v6.5"></path><path d="M5.3 9h5.4"></path></svg>`;
+            return `<svg ${common}><circle cx="8" cy="8" r="2.2"></circle><path d="M8 2.4v1.5"></path><path d="M8 12.1v1.5"></path><path d="m3.9 3.9 1.1 1.1"></path><path d="m11 11 1.1 1.1"></path><path d="M2.4 8h1.5"></path><path d="M12.1 8h1.5"></path><path d="m3.9 12.1 1.1-1.1"></path><path d="m11 5 1.1-1.1"></path></svg>`;
         case 'ask':
-            return `<svg ${common}><path d="M4.2 3.5h7.6a2.1 2.1 0 0 1 2.1 2.1v4.1a2.1 2.1 0 0 1-2.1 2.1H7.1l-2.8 2v-2H4.2a2.1 2.1 0 0 1-2.1-2.1V5.6a2.1 2.1 0 0 1 2.1-2.1Z"></path></svg>`;
+            return `<svg ${common}><path d="M3.5 4.1a1.9 1.9 0 0 1 1.9-1.9h5.2a1.9 1.9 0 0 1 1.9 1.9v3.5a1.9 1.9 0 0 1-1.9 1.9H7.2l-2.6 2V9.5H5.4a1.9 1.9 0 0 1-1.9-1.9Z"></path></svg>`;
         case 'agent':
         default:
             return `<svg ${common}><path d="M3.1 9c0-1.7 1.1-3 2.5-3s2.5 1.3 2.5 3-1.1 3-2.5 3-2.5-1.3-2.5-3Z"></path><path d="M7.9 9c0-1.7 1.1-3 2.5-3s2.5 1.3 2.5 3-1.1 3-2.5 3-2.5-1.3-2.5-3Z"></path></svg>`;
@@ -538,6 +544,8 @@ function setHomeScreen(enabled) {
     refreshBtn.setAttribute('data-tooltip', enabled ? 'New Chat' : 'Refresh');
     fullscreenBtn.setAttribute('aria-label', enabled ? 'Close' : document.fullscreenElement ? 'Exit Fullscreen' : 'Fullscreen');
     fullscreenBtn.setAttribute('data-tooltip', enabled ? 'Close' : document.fullscreenElement ? 'Exit Fullscreen' : 'Fullscreen');
+    if (newChatLabel) newChatLabel.textContent = enabled ? HOME_TAB_LABEL : DEFAULT_NEW_CHAT_LABEL;
+    if (appBrandTitle) appBrandTitle.textContent = enabled ? HOME_APP_TITLE : DEFAULT_APP_TITLE;
 
     if (enabled) {
         setTextContent(homeContextAgent, 'Cursor');
@@ -2067,6 +2075,12 @@ function renderModelOptionsList(listEl, state, filterText = '') {
     });
 }
 
+function getAutoToggle(state) {
+    return Array.isArray(state?.toggles)
+        ? state.toggles.find((toggle) => toggle?.key === 'auto' || /^auto$/i.test(toggle?.label || ''))
+        : null;
+}
+
 function buildModelDropdownMenu(menu, state) {
     menu.innerHTML = '';
 
@@ -2086,62 +2100,84 @@ function buildModelDropdownMenu(menu, state) {
         >
     `;
     panel.appendChild(searchWrap);
-
-    if (Array.isArray(state.toggles) && state.toggles.length) {
-        const toggleList = document.createElement('div');
-        toggleList.className = 'model-toggle-list';
-        state.toggles.forEach((toggle) => {
-            const row = document.createElement('button');
-            row.type = 'button';
-            row.className = 'model-toggle-row' + (toggle.enabled ? ' active' : '');
-            row.dataset.toggleKey = toggle.key;
-            row.innerHTML = `
-                <span class="model-toggle-copy">
-                    <span class="model-toggle-title">${escapeHtml(toggle.label)}</span>
-                    ${toggle.description ? `<span class="model-toggle-desc">${escapeHtml(toggle.description)}</span>` : ''}
-                </span>
-                <span class="model-toggle-switch${toggle.enabled ? ' is-on' : ''}" aria-hidden="true">
-                    <span class="model-toggle-knob"></span>
-                </span>
-            `;
-            toggleList.appendChild(row);
-        });
-        panel.appendChild(toggleList);
-    }
-
-    const topDivider = document.createElement('div');
-    topDivider.className = 'model-menu-divider';
-    panel.appendChild(topDivider);
-
-    const listEl = document.createElement('div');
-    listEl.className = 'model-options-list';
-    panel.appendChild(listEl);
-    renderModelOptionsList(listEl, state);
-
-    if (state.footerLabel) {
-        const bottomDivider = document.createElement('div');
-        bottomDivider.className = 'model-menu-divider';
-        panel.appendChild(bottomDivider);
-
-        const footer = document.createElement('button');
-        footer.type = 'button';
-        footer.className = 'model-footer-row';
-        footer.dataset.action = 'add-models';
-        footer.innerHTML = `
-            <span class="model-footer-label">${escapeHtml(state.footerLabel)}</span>
-            <span class="model-footer-chevron" aria-hidden="true">&#8250;</span>
-        `;
-        panel.appendChild(footer);
-    }
+    const contentWrap = document.createElement('div');
+    contentWrap.className = 'model-menu-content';
+    panel.appendChild(contentWrap);
 
     menu.appendChild(panel);
 
     const searchInput = searchWrap.querySelector('.model-search-input');
+    const renderMenuContent = (filterText = '') => {
+        const normalizedFilter = String(filterText || '').trim();
+        const autoToggle = getAutoToggle(state);
+        const isHomeAutoMenu = document.body.classList.contains('home-screen') && /^auto$/i.test(state.current || '');
+        const isCompactAutoMenu = isHomeAutoMenu && !!autoToggle?.enabled && !normalizedFilter;
+        const visibleToggles = isHomeAutoMenu
+            ? (autoToggle ? [autoToggle] : [])
+            : (Array.isArray(state.toggles) ? state.toggles : []);
+
+        menu.classList.toggle('auto-compact-menu', isHomeAutoMenu);
+        panel.classList.toggle('home-auto-model-menu', isHomeAutoMenu);
+        panel.classList.toggle('compact-auto-menu', isCompactAutoMenu);
+        contentWrap.innerHTML = '';
+
+        if (visibleToggles.length) {
+            const toggleList = document.createElement('div');
+            toggleList.className = 'model-toggle-list';
+            visibleToggles.forEach((toggle) => {
+                const row = document.createElement('button');
+                row.type = 'button';
+                row.className = 'model-toggle-row' + (toggle.enabled ? ' active' : '');
+                row.dataset.toggleKey = toggle.key;
+                row.innerHTML = `
+                    <span class="model-toggle-copy">
+                        <span class="model-toggle-title">${escapeHtml(toggle.label)}</span>
+                        ${toggle.description ? `<span class="model-toggle-desc">${escapeHtml(toggle.description)}</span>` : ''}
+                    </span>
+                    <span class="model-toggle-switch${toggle.enabled ? ' is-on' : ''}" aria-hidden="true">
+                        <span class="model-toggle-knob"></span>
+                    </span>
+                `;
+                toggleList.appendChild(row);
+            });
+            contentWrap.appendChild(toggleList);
+        }
+
+        if (isCompactAutoMenu) return;
+
+        const listDivider = document.createElement('div');
+        listDivider.className = 'model-menu-divider';
+        contentWrap.appendChild(listDivider);
+
+        const listEl = document.createElement('div');
+        listEl.className = 'model-options-list';
+        contentWrap.appendChild(listEl);
+        renderModelOptionsList(listEl, state, normalizedFilter);
+
+        if (!isHomeAutoMenu && state.footerLabel) {
+            const bottomDivider = document.createElement('div');
+            bottomDivider.className = 'model-menu-divider';
+            contentWrap.appendChild(bottomDivider);
+
+            const footer = document.createElement('button');
+            footer.type = 'button';
+            footer.className = 'model-footer-row';
+            footer.dataset.action = 'add-models';
+            footer.innerHTML = `
+                <span class="model-footer-label">${escapeHtml(state.footerLabel)}</span>
+                <span class="model-footer-chevron" aria-hidden="true">&#8250;</span>
+            `;
+            contentWrap.appendChild(footer);
+        }
+    };
+
     if (searchInput) {
         searchInput.addEventListener('input', () => {
-            renderModelOptionsList(listEl, state, searchInput.value);
+            renderMenuContent(searchInput.value);
         });
     }
+
+    renderMenuContent('');
 }
 
 function setDropdownLoading(menu, title) {
