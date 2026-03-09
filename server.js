@@ -157,6 +157,8 @@ const FORCE_VISIBLE_CURSOR = process.env.CR_VISIBLE_CURSOR === '1';
 let cdpConnection = null;
 let lastSnapshot = null;
 let lastSnapshotHash = null;
+let lastAppState = null;
+let lastAppStateHash = null;
 let cursorLaunchPromise = null;
 
 const CURSOR_UI_HELPERS = String.raw`
@@ -199,6 +201,25 @@ const __cr = (() => {
                 seen.add(key);
                 return true;
             });
+    };
+    const MODE_TEXT_MATCHER = /^(agent|plan|debug|ask|fast|planning|manual)\b/i;
+    const MODEL_TEXT_HINT_MATCHER = /(?:\bauto\b|gpt|claude|sonnet|opus|composer|gemini|\d\.\d)/i;
+    const getBestLeafTextMatch = (el, matcher, { maxLength = 80 } = {}) => {
+        if (!el || !matcher) return '';
+        return getLeafTexts(el)
+            .map(normalizeText)
+            .filter(text => text && text.length <= maxLength && matcher.test(text))
+            .sort((a, b) => a.length - b.length || a.localeCompare(b))[0] || '';
+    };
+    const isPlausibleModeText = (value) => {
+        const text = normalizeText(value);
+        return !!text && text.length <= 24 && MODE_TEXT_MATCHER.test(text);
+    };
+    const isPlausibleModelText = (value) => {
+        const text = normalizeText(value);
+        if (!text || text.length > 48) return false;
+        if (/[{};]/.test(text) || /\.monaco-|cursorremote|upgrade to pro|launchpad|ctrl\+|https?:|\.png\b/i.test(text)) return false;
+        return /^(auto|composer\s+\d+(?:\.\d+)*|gpt-\d+(?:\.\d+)*(?:\s+codex)?|sonnet\s+\d+(?:\.\d+)*|opus\s+\d+(?:\.\d+)*|gemini\s+\d+(?:\s+flash)?|claude(?:\s+[\w.-]+)?|o\d(?:\s+[\w.-]+)?)$/i.test(text);
     };
     const getModeHintText = () => {
         const panel = findPanel() || document;
@@ -248,6 +269,34 @@ const __cr = (() => {
         });
 
         return candidates[0] || null;
+    };
+
+    const normalizeChatTitleMatchKey = (value) => normalizeText(value)
+        .replace(/[\u2026.]+$/g, '')
+        .trim()
+        .toLowerCase();
+
+    const chatTitlesMatch = (left, right) => {
+        const a = normalizeChatTitleMatchKey(left);
+        const b = normalizeChatTitleMatchKey(right);
+        if (!a || !b) return false;
+        return a === b || a.includes(b) || b.includes(a);
+    };
+
+    const normalizeChatTabElement = (el) => {
+        if (!el) return null;
+        const rootTab = el.closest?.('[role="tab"]');
+        return rootTab && isVisible(rootTab) ? rootTab : el;
+    };
+
+    const getChatTabElements = (container = findChatTabsContainer()) => {
+        if (!container) return [];
+        return uniqueElements(
+            Array.from(container.querySelectorAll('[role="tab"], .composite-bar-action-tab'))
+                .filter(isVisible)
+                .map(normalizeChatTabElement)
+                .filter(isVisible)
+        );
     };
 
     const findChatTabsContainer = () => {
@@ -300,7 +349,7 @@ const __cr = (() => {
         if (!container) return [];
 
         const seen = new Set();
-        return uniqueElements(Array.from(container.querySelectorAll('[role="tab"], .composite-bar-action-tab')).filter(isVisible))
+        const tabs = getChatTabElements(container)
             .map((el) => {
                 const title = normalizeText(el.getAttribute?.('aria-label') || textOf(el));
                 if (!title || title.length > 120) return null;
@@ -316,6 +365,17 @@ const __cr = (() => {
                 };
             })
             .filter(Boolean);
+
+        const activeTitle = tabs.find(tab => tab.active)?.title || '';
+        if (!activeTitle) return tabs;
+
+        const normalizedActiveTitle = activeTitle.toLowerCase();
+        return tabs.filter((tab) => {
+            if (tab.active) return true;
+            const normalizedTitle = tab.title.toLowerCase();
+            if (normalizedTitle === normalizedActiveTitle) return false;
+            return !(normalizedTitle.length < normalizedActiveTitle.length && chatTitlesMatch(tab.title, activeTitle));
+        });
     };
 
     const getActiveChatTitle = () => {
@@ -341,6 +401,54 @@ const __cr = (() => {
         return candidates
             .sort((a, b) => a.getBoundingClientRect().y - b.getBoundingClientRect().y)
             .at(-1) || null;
+    };
+
+    const findComposerBar = () => {
+        const panel = findPanel() || document;
+        return uniqueElements(queryAllVisible('.composer-bar, [data-composer-id]', panel))
+            .sort((a, b) => {
+                const aRect = a.getBoundingClientRect();
+                const bRect = b.getBoundingClientRect();
+                return (bRect.bottom - aRect.bottom) || (aRect.left - bRect.left);
+            })[0] || null;
+    };
+
+    const getComposerAnchorRect = () => {
+        return findComposerBar()?.getBoundingClientRect?.() || findEditor()?.getBoundingClientRect?.() || null;
+    };
+
+    const scoreComposerChipCandidate = (el, {
+        matcher,
+        excludeMatcher = null,
+        maxTextLength,
+        minWidth,
+        maxWidth,
+        minHeight = 18,
+        maxHeight = 44,
+        maxContainerTextLength = Math.max(maxTextLength * 2, 72),
+        horizontalWeight = 0.03
+    } = {}) => {
+        if (!el || !isVisible(el)) return -Infinity;
+
+        const rect = el.getBoundingClientRect();
+        const leafText = getBestLeafTextMatch(el, matcher, { maxLength: maxTextLength });
+        const containerText = normalizeText(textOf(el));
+        if (!leafText || !containerText) return -Infinity;
+        if (excludeMatcher) {
+            const excludedText = getBestLeafTextMatch(el, excludeMatcher, { maxLength: 48 });
+            if (excludedText && excludedText.toLowerCase() !== leafText.toLowerCase()) return -Infinity;
+        }
+        if (containerText.length > maxContainerTextLength) return -Infinity;
+        if (rect.width < minWidth || rect.width > maxWidth || rect.height < minHeight || rect.height > maxHeight) return -Infinity;
+
+        const anchorRect = getComposerAnchorRect();
+        if (!anchorRect) return 100 - containerText.length;
+
+        const verticalDistance = Math.abs(rect.bottom - anchorRect.bottom);
+        if (verticalDistance > 120) return -Infinity;
+
+        const horizontalPenalty = Math.abs(rect.left - anchorRect.left) * horizontalWeight;
+        return 100 - verticalDistance - horizontalPenalty - containerText.length;
     };
 
     const findPanelScrollRoot = () => {
@@ -468,8 +576,50 @@ const __cr = (() => {
         return candidates[0] || null;
     };
 
+    const MENU_TEXT_MARKERS = [
+        /^auto(?:\b|\s)/i,
+        /^max mode(?:\b|\s)/i,
+        /^use multiple models?(?:\b|\s)/i,
+        /^search models?$/i,
+        /^add models?$/i,
+        /^(agent|plan|debug|ask|fast|planning|manual)\b/i
+    ];
+
+    const findPopupAncestor = (el) => {
+        let current = el;
+        while (current && current !== document.body) {
+            if (isVisible(current)) {
+                const rect = current.getBoundingClientRect();
+                const text = normalizeText(textOf(current));
+                if (
+                    text &&
+                    MENU_TEXT_MARKERS.some(marker => marker.test(text)) &&
+                    rect.width >= 120 &&
+                    rect.width <= 420 &&
+                    rect.height >= 24 &&
+                    rect.height <= Math.min(window.innerHeight * 0.92, 560)
+                ) {
+                    return current;
+                }
+            }
+            current = current.parentElement;
+        }
+        return null;
+    };
+
     const findMenuContainers = () => {
-        const containers = queryAllVisible('[role="menu"], [role="dialog"], [role="listbox"], .ui-menu__content, .context-view, [data-radix-popper-content-wrapper], [data-radix-popper-content-wrapper] > div, .monaco-menu-container, .monaco-select-box-dropdown-container', document);
+        const selectorContainers = queryAllVisible('[role="menu"], [role="dialog"], [role="listbox"], .ui-menu__content, .context-view, [data-radix-popper-content-wrapper], [data-radix-popper-content-wrapper] > div, .monaco-menu-container, .monaco-select-box-dropdown-container', document);
+        const inferredContainers = uniqueElements(
+            Array.from(document.querySelectorAll('button, [role="menuitem"], [role="option"], [role="button"], a, div, span'))
+                .filter(isVisible)
+                .filter((el) => {
+                    const text = normalizeText(textOf(el));
+                    return text && MENU_TEXT_MARKERS.some(marker => marker.test(text));
+                })
+                .map(findPopupAncestor)
+                .filter(Boolean)
+        );
+        const containers = uniqueElements([...selectorContainers, ...inferredContainers]);
         containers.sort((a, b) => {
             const aRect = a.getBoundingClientRect();
             const bRect = b.getBoundingClientRect();
@@ -615,6 +765,33 @@ const __cr = (() => {
         return cls.includes('checked') || cls.includes('enabled') || cls.includes('active') || cls.includes('on');
     };
 
+    const isSelectableRowActive = (el) => {
+        if (!el) return false;
+        const candidates = [
+            el,
+            ...Array.from(el.querySelectorAll('[aria-selected], [aria-current], [aria-checked], [aria-pressed], .checked, .active, .selected, .current'))
+        ];
+
+        return candidates.some((candidate) => {
+            if (!candidate) return false;
+
+            const ariaSelected = candidate.getAttribute?.('aria-selected');
+            if (ariaSelected === 'true') return true;
+
+            const ariaCurrent = candidate.getAttribute?.('aria-current');
+            if (ariaCurrent && ariaCurrent !== 'false') return true;
+
+            const ariaChecked = candidate.getAttribute?.('aria-checked');
+            if (ariaChecked === 'true') return true;
+
+            const ariaPressed = candidate.getAttribute?.('aria-pressed');
+            if (ariaPressed === 'true') return true;
+
+            const cls = getClassName(candidate).toLowerCase();
+            return cls.includes('checked') || cls.includes('active') || cls.includes('selected') || cls.includes('current');
+        });
+    };
+
     const setInputValue = (input, value) => {
         if (!input) return false;
 
@@ -660,6 +837,23 @@ const __cr = (() => {
             });
     };
 
+    const getSelectedModelMenuOption = (root = findModelMenuRoot()) => {
+        const rows = getModelMenuRows(root)
+            .filter((row) => isPlausibleModelText(row.text));
+
+        const explicitSelection = rows
+            .filter((row) => isSelectableRowActive(row.element))
+            .sort((a, b) => (b.text.length - a.text.length) || (a.rect.top - b.rect.top))[0];
+        if (explicitSelection) return explicitSelection.text;
+
+        const checkmarkSelection = rows
+            .filter((row) => /\bcheck(mark)?\b/i.test(getClassName(row.element)))
+            .sort((a, b) => (b.text.length - a.text.length) || (a.rect.top - b.rect.top))[0];
+        if (checkmarkSelection) return checkmarkSelection.text;
+
+        return '';
+    };
+
     const findModelToggleRow = (label, root = findModelMenuRoot()) => {
         const matcher = new RegExp('^' + escapeRegExp(label) + '(?:\\\\b|\\\\s)', 'i');
         return getModelMenuRows(root).find(row => matcher.test(row.text))?.element || null;
@@ -690,10 +884,17 @@ const __cr = (() => {
         ];
 
         const toggles = toggleDefs.map(def => {
-            const row = rows.find(item => def.matcher.test(item.text));
+            const otherMatchers = toggleDefs.filter(other => other.key !== def.key).map(other => other.matcher);
+            const row = rows
+                .filter(item => def.matcher.test(item.text))
+                .filter(item => !otherMatchers.some(matcher => matcher.test(item.text)))
+                .sort((a, b) => (a.rect.height - b.rect.height) || (a.text.length - b.text.length))[0] ||
+                rows
+                    .filter(item => def.matcher.test(item.text))
+                    .sort((a, b) => (a.rect.height - b.rect.height) || (a.text.length - b.text.length))[0];
             if (!row) return null;
 
-            const description = normalizeText(row.text.replace(new RegExp('^' + escapeRegExp(def.label) + '\\\\s*', 'i'), ''));
+            const description = normalizeText(row.text.replace(new RegExp('^(?:' + escapeRegExp(def.label) + '\\\\s*)+', 'i'), ''));
             targets.push({
                 kind: 'toggle',
                 key: def.key,
@@ -706,7 +907,7 @@ const __cr = (() => {
                 key: def.key,
                 label: def.label,
                 description,
-                enabled: getSwitchState(row.element)
+                enabled: getSwitchState(row.element) || (def.key === 'auto' && /^auto$/i.test(current))
             };
         }).filter(Boolean);
 
@@ -723,6 +924,7 @@ const __cr = (() => {
             const key = title.toLowerCase();
             if (!title || title.length > 80) continue;
             if (blockedMatchers.some(matcher => matcher.test(title))) continue;
+            if (!isPlausibleModelText(title)) continue;
             if (seen.has(key)) continue;
             seen.add(key);
             options.push(title);
@@ -825,32 +1027,40 @@ const __cr = (() => {
         const panel = findPanel() || document;
         const el = uniqueElements(queryAllVisible(selector, panel).map(resolveTrigger))[0] || null;
         if (!el) return '';
-        const leafText = getLeafTexts(el)[0];
+        const leafText = getLeafTexts(el)
+            .map(normalizeText)
+            .filter(text => text && text.length <= 64)
+            .sort((a, b) => a.length - b.length || a.localeCompare(b))[0];
         return leafText || textOf(el);
     };
 
     const getModeText = () => {
         const button = findModeButton();
         const dataMode = pickModeName(button?.getAttribute?.('data-mode') || '');
-        if (dataMode) return dataMode;
+        if (isPlausibleModeText(dataMode)) return dataMode;
 
-        const leafText = getLeafTexts(button).find(text => /^(agent|plan|debug|ask|fast|planning|manual)\b/i.test(text));
-        if (leafText) return pickModeName(leafText);
+        const leafText = getBestLeafTextMatch(button, MODE_TEXT_MATCHER, { maxLength: 24 });
+        if (isPlausibleModeText(leafText)) return pickModeName(leafText);
 
         const hintedMode = getModeHintText();
-        if (hintedMode) return pickModeName(hintedMode);
+        if (isPlausibleModeText(hintedMode)) return pickModeName(hintedMode);
 
-        return pickModeName(getDropdownText('.composer-unified-dropdown'));
+        const fallback = pickModeName(getDropdownText('.composer-unified-dropdown'));
+        return isPlausibleModeText(fallback) ? fallback : '';
     };
 
     const getModelText = () => {
         const button = findModelButton();
-        if (!button) return '';
+        if (button) {
+            const preferred = getBestLeafTextMatch(button, MODEL_TEXT_HINT_MATCHER, { maxLength: 48 });
+            if (isPlausibleModelText(preferred)) return preferred;
 
-        const preferred = getLeafTexts(button).find(text => /(?:gpt|claude|sonnet|opus|composer|gemini|\d\.\d)/i.test(text));
-        if (preferred) return preferred;
+            const fallback = getDropdownText('.composer-unified-dropdown-model');
+            if (isPlausibleModelText(fallback)) return fallback;
+        }
 
-        return getDropdownText('.composer-unified-dropdown-model');
+        const selectedFromMenu = getSelectedModelMenuOption();
+        return isPlausibleModelText(selectedFromMenu) ? selectedFromMenu : '';
     };
 
     const findDropdownMenuItem = (targetText, containers = findMenuContainers()) => {
@@ -864,31 +1074,89 @@ const __cr = (() => {
 
     const findModeButton = () => {
         const panel = findPanel() || document;
-        const candidates = uniqueElements(
-            queryAllVisible('.composer-unified-dropdown, [data-mode]', panel)
-                .map(resolveTrigger)
-                .filter(isVisible)
-        ).sort((a, b) => a.getBoundingClientRect().y - b.getBoundingClientRect().y);
-        return candidates[0] || null;
+        const composer = findComposerBar() || panel;
+        return uniqueElements([
+            ...queryAllVisible('.composer-unified-dropdown, [data-mode]', composer),
+            ...queryAllVisible('button, [role="button"], a, div', composer),
+            ...queryAllVisible('.composer-unified-dropdown, [data-mode]', document)
+        ].map(resolveTrigger).filter(isVisible))
+            .map(el => ({
+                el,
+                score: scoreComposerChipCandidate(el, {
+                    matcher: MODE_TEXT_MATCHER,
+                    excludeMatcher: MODEL_TEXT_HINT_MATCHER,
+                    maxTextLength: 24,
+                    minWidth: 44,
+                    maxWidth: 180,
+                    maxHeight: 40,
+                    maxContainerTextLength: 56,
+                    horizontalWeight: 0.08
+                })
+            }))
+            .filter(item => Number.isFinite(item.score))
+            .sort((a, b) => b.score - a.score)[0]?.el || null;
     };
 
     const findModelButton = () => {
         const panel = findPanel() || document;
-        const directMatches = uniqueElements(
-            queryAllVisible('.composer-unified-dropdown-model, [id*="unifiedmodeldropdown"]', panel)
-                .map(resolveTrigger)
-                .filter(isVisible)
-        ).sort((a, b) => a.getBoundingClientRect().y - b.getBoundingClientRect().y);
-        if (directMatches[0]) return directMatches[0];
+        const composer = findComposerBar() || panel;
+        const directMatch = uniqueElements([
+            ...queryAllVisible('.composer-unified-dropdown-model, [id*="unifiedmodeldropdown"]', composer),
+            ...queryAllVisible('button, [role="button"], a, div', composer),
+            ...queryAllVisible('.composer-unified-dropdown-model, [id*="unifiedmodeldropdown"]', document)
+        ].map(resolveTrigger).filter(isVisible))
+            .map(el => ({
+                el,
+                score: scoreComposerChipCandidate(el, {
+                    matcher: MODEL_TEXT_HINT_MATCHER,
+                    excludeMatcher: MODE_TEXT_MATCHER,
+                    maxTextLength: 48,
+                    minWidth: 56,
+                    maxWidth: 240,
+                    maxHeight: 40,
+                    maxContainerTextLength: 72,
+                    horizontalWeight: 0.04
+                })
+            }))
+            .filter(item => Number.isFinite(item.score))
+            .sort((a, b) => b.score - a.score)[0]?.el || null;
+        if (directMatch) return directMatch;
 
-        const composer = queryAllVisible('.composer-bar, [data-composer-id]', panel)[0] || panel;
-        const fallbackMatches = uniqueElements(
-            queryAllVisible('button, [role="button"], a, div', composer)
-                .map(resolveTrigger)
-                .filter(isVisible)
-                .filter(el => getLeafTexts(el).some(text => /(?:gpt|claude|sonnet|opus|composer|gemini|\d\.\d)/i.test(text)))
-        ).sort((a, b) => a.getBoundingClientRect().x - b.getBoundingClientRect().x);
-        return fallbackMatches[0] || null;
+        const modeButton = findModeButton();
+        if (!modeButton) return null;
+
+        const modeRect = modeButton.getBoundingClientRect();
+        return uniqueElements([
+            ...queryAllVisible('button, [role="button"], a, div', composer),
+            ...queryAllVisible('button, [role="button"], a, div', document)
+        ].map(resolveTrigger).filter(isVisible))
+            .filter(el => el !== modeButton)
+            .map((el) => {
+                const rect = el.getBoundingClientRect();
+                const centerY = rect.top + (rect.height / 2);
+                const modeCenterY = modeRect.top + (modeRect.height / 2);
+                const horizontalGap = rect.left - modeRect.right;
+                const leafText = getBestLeafTextMatch(el, MODEL_TEXT_HINT_MATCHER, { maxLength: 48 });
+                const ariaText = normalizeText(el.getAttribute?.('aria-label') || el.getAttribute?.('title') || '');
+                const combinedText = normalizeText([leafText, ariaText, textOf(el)].filter(Boolean).join(' '));
+                const cls = getClassName(el).toLowerCase();
+
+                if (rect.width < 40 || rect.width > 260 || rect.height < 18 || rect.height > 44) return { el, score: -Infinity };
+                if (horizontalGap < -8 || horizontalGap > 220) return { el, score: -Infinity };
+                if (Math.abs(centerY - modeCenterY) > 24) return { el, score: -Infinity };
+                if (/^(send|stop|new chat|attach|more actions)/i.test(combinedText)) return { el, score: -Infinity };
+                if (MODE_TEXT_MATCHER.test(combinedText) && !MODEL_TEXT_HINT_MATCHER.test(combinedText)) return { el, score: -Infinity };
+
+                let score = 40 - Math.abs(centerY - modeCenterY) - Math.max(0, horizontalGap);
+                if (isPlausibleModelText(leafText)) score += 35;
+                if (isPlausibleModelText(ariaText)) score += 28;
+                if (MODEL_TEXT_HINT_MATCHER.test(combinedText)) score += 14;
+                if (cls.includes('dropdown') || cls.includes('chip') || cls.includes('composer')) score += 6;
+                if (el.querySelector?.('svg, .codicon-chevron-down, .codicon-chevron-up, .codicon-chevron-small-down')) score += 4;
+                return { el, score };
+            })
+            .filter(item => Number.isFinite(item.score) && item.score > 0)
+            .sort((a, b) => b.score - a.score)[0]?.el || null;
     };
 
     const collectMessageNodes = () => {
@@ -910,12 +1178,14 @@ const __cr = (() => {
     return {
         getClassName,
         isVisible,
+        isTabActive,
         textOf,
         queryAllVisible,
         findPanel,
         findEditor,
         findPanelScrollRoot,
         findChatTabsContainer,
+        getChatTabElements,
         click,
         focusEditor,
         setEditorText,
@@ -1202,7 +1472,7 @@ function iscursorRunning() {
                 encoding: 'utf8',
                 stdio: ['ignore', 'pipe', 'ignore']
             });
-            return output.toLowerCase().includes('Cursor.exe');
+            return output.toLowerCase().includes('cursor.exe');
         }
 
         execSync('pgrep -f cursor', { stdio: 'ignore' });
@@ -1282,6 +1552,7 @@ async function launchcursorWithCDP() {
 
         // Step 3: Launch Cursor - use multiple strategies
         let launched = false;
+        let ready = false;
 
         // Strategy A: Direct spawn with CLI flag (works on Antigravity, may work on older Cursor)
         try {
@@ -1308,6 +1579,11 @@ async function launchcursorWithCDP() {
             } else if (quickExitCode === 9 || quickExitCode === 1) {
                 // Exit code 9 = "bad option" â€” Cursor rejected the CLI flag
                 console.log(`Cursor rejected --remote-debugging-port CLI flag (exit ${quickExitCode}), using argv.json fallback`);
+                ready = await waitForCDP(10000);
+                if (ready) {
+                    launched = true;
+                    console.log('Cursor exposed CDP after launcher exit; skipping argv.json fallback');
+                }
             } else if (quickExitCode === 0) {
                 // Exit 0 = single-instance detected, delegated to existing process
                 console.log('Cursor delegated to existing instance (exit 0)');
@@ -1349,7 +1625,9 @@ async function launchcursorWithCDP() {
             }
         }
 
-        const ready = await waitForCDP(45000); // Longer timeout for Cursor startup
+        if (!ready) {
+            ready = await waitForCDP(45000); // Longer timeout for Cursor startup
+        }
         if (ready) {
             console.log(`âœ… Cursor CDP is ready on port ${PRIMARY_CDP_PORT}.`);
         } else {
@@ -1933,22 +2211,56 @@ async function setMode(cdp, mode) {
     const targetMode = String(mode || '').trim();
     if (!targetMode) return { error: 'Invalid mode' };
     const requestedCandidates = getModeRequestCandidates(targetMode);
-
-    return await evaluateCursor(cdp, `
-        const requestedMode = ${JSON.stringify(targetMode)};
-        const requestedCandidates = ${JSON.stringify(requestedCandidates)};
-        const modeButton = __cr.findModeButton();
-        if (!modeButton) return { error: 'mode_button_not_found' };
-
-        const currentMode = __cr.getModeText();
-        if (currentMode && requestedCandidates.some(candidate => currentMode.toLowerCase() === candidate.toLowerCase())) {
-            return { success: true, alreadySet: true, currentMode };
+    const verifyModeState = async (fallbackAvailable = []) => {
+        const verifiedState = await getDropdownOptions(cdp, 'mode');
+        const verifiedCurrent = String(verifiedState?.current || '').trim();
+        if (verifiedCurrent && requestedCandidates.some(candidate => verifiedCurrent.toLowerCase() === candidate.toLowerCase())) {
+            return {
+                success: true,
+                currentMode: verifiedCurrent,
+                available: verifiedState?.options || fallbackAvailable
+            };
         }
 
-        __cr.click(modeButton);
-        await new Promise(r => setTimeout(r, 250));
-        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+        return {
+            error: 'mode_apply_mismatch',
+            currentMode: verifiedCurrent || 'Unknown',
+            available: verifiedState?.options || fallbackAvailable
+        };
+    };
 
+    const menuState = await getDropdownOptions(cdp, 'mode');
+    const currentMode = String(menuState?.current || '').trim();
+    if (currentMode && requestedCandidates.some((candidate) => currentMode.toLowerCase() === candidate.toLowerCase())) {
+        return { success: true, alreadySet: true, currentMode };
+    }
+
+    if (!menuState?.buttonPoint) {
+        return { error: 'mode_button_not_found' };
+    }
+
+    const directTarget = Array.isArray(menuState.targets)
+        ? menuState.targets.find((target) => requestedCandidates.some((candidate) => String(target?.title || '').toLowerCase() === candidate.toLowerCase()))
+        : null;
+    if (!directTarget) {
+        return {
+            error: 'mode_option_not_found',
+            currentMode: currentMode || 'Unknown',
+            available: menuState.options || []
+        };
+    }
+
+    await clickAtPoint(cdp, menuState.buttonPoint.x, menuState.buttonPoint.y);
+    await new Promise((resolve) => setTimeout(resolve, 260));
+    await clickAtPoint(cdp, directTarget.x, directTarget.y);
+    await new Promise((resolve) => setTimeout(resolve, 260));
+
+    const verified = await verifyModeState(menuState.options || []);
+    if (verified?.success) return verified;
+
+    const fallback = await evaluateCursor(cdp, `
+        const requestedMode = ${JSON.stringify(targetMode)};
+        const requestedCandidates = ${JSON.stringify(requestedCandidates)};
         let menus = __cr.findMenuContainers();
         const matchingMenus = menus.filter(menu => requestedCandidates.some(candidate => __cr.textOf(menu).toLowerCase().includes(candidate.toLowerCase())));
         if (matchingMenus.length) menus = matchingMenus;
@@ -1958,25 +2270,50 @@ async function setMode(cdp, mode) {
             option = __cr.findDropdownMenuItem(candidate, menus);
             if (option) break;
         }
-        const available = __cr.getMenuItemTexts(menus).slice(0, 30);
 
-        if (!option) {
+        const available = __cr.getMenuItemTexts(menus).slice(0, 30);
+        const closeMenu = () => {
             document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
             document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', bubbles: true }));
-            return { error: 'mode_option_not_found', currentMode, available };
+        };
+
+        if (!option) {
+            closeMenu();
+            return {
+                error: 'mode_option_not_found',
+                currentMode: __cr.getModeText() || requestedMode,
+                available
+            };
         }
 
         __cr.click(option);
         await new Promise(r => setTimeout(r, 250));
+        const appliedMode = __cr.getModeText() || requestedMode;
+        closeMenu();
+
+        if (!requestedCandidates.some(candidate => appliedMode.toLowerCase() === candidate.toLowerCase())) {
+            return {
+                error: 'mode_apply_mismatch',
+                currentMode: appliedMode,
+                available
+            };
+        }
 
         return {
             success: true,
-            currentMode: __cr.getModeText() || requestedMode,
+            currentMode: appliedMode,
             available
         };
     `, {
-        accept: (value) => value && typeof value === 'object' && !value.error
+        accept: (value) => value && typeof value === 'object'
     });
+
+    if (fallback?.success) {
+        const fallbackVerified = await verifyModeState(fallback.available || []);
+        if (fallbackVerified?.success) return fallbackVerified;
+    }
+
+    return fallback || verified;
 }
 
 // Stop Generation
@@ -2080,8 +2417,9 @@ async function setModel(cdp, modelName) {
 
     const result = await evaluateCursor(cdp, `
         const requestedModel = ${JSON.stringify(targetModel)};
+        let rootMenu = __cr.findModelMenuRoot();
         const modelButton = __cr.findModelButton();
-        if (!modelButton) return { error: 'model_button_not_found' };
+        if (!modelButton && !rootMenu) return { error: 'model_button_not_found' };
         const escapeRegExp = (value) => String(value || '').replace(/[-/\\\\^$*+?.()|[\\]{}]/g, '\\\\$&');
         const optionMatcher = new RegExp('^' + escapeRegExp(requestedModel) + '(?:\\\\b|\\\\s|$)', 'i');
         const waitForMenu = async () => {
@@ -2122,12 +2460,11 @@ async function setModel(cdp, modelName) {
             return { success: true, alreadySet: true, currentModel };
         }
 
-        let rootMenu = __cr.findModelMenuRoot();
         let menus = rootMenu ? [rootMenu] : __cr.findMenuContainers();
         let option = __cr.findDropdownMenuItem(requestedModel, menus) || findOptionAnywhere();
         let searchSubmitUsed = false;
 
-        if (!option) {
+        if (!option && modelButton) {
             __cr.click(modelButton);
             await waitForMenu();
             rootMenu = __cr.findModelMenuRoot();
@@ -2151,7 +2488,7 @@ async function setModel(cdp, modelName) {
             option = __cr.findModelToggleRow('Auto') || findOptionAnywhere();
         }
 
-        if (!option) {
+        if (!option && modelButton) {
             // Retry once in case the first click closed a menu that was already open.
             __cr.click(modelButton);
             await waitForMenu();
@@ -2219,10 +2556,18 @@ async function setModel(cdp, modelName) {
 
         __cr.click(option);
         await new Promise(r => setTimeout(r, 250));
+        const appliedModel = __cr.getModelText() || requestedModel;
+        if (appliedModel.toLowerCase() !== requestedModel.toLowerCase()) {
+            return {
+                error: 'model_apply_mismatch',
+                currentModel: appliedModel,
+                available: availableWithToggles
+            };
+        }
 
         return {
             success: true,
-            currentModel: __cr.getModelText() || requestedModel,
+            currentModel: appliedModel,
             available: availableWithToggles
         };
     `, {
@@ -2243,6 +2588,72 @@ async function setModel(cdp, modelName) {
     const targetEntry = /^auto$/i.test(targetModel)
         ? targets.find((target) => target.kind === 'toggle' && target.key === 'auto')
         : targets.find((target) => target.kind === 'option' && String(target.title || '').trim().toLowerCase() === targetModel.toLowerCase());
+
+    if (menuState?.buttonPoint && !targetEntry) {
+        await clickAtPoint(cdp, menuState.buttonPoint.x, menuState.buttonPoint.y);
+        await new Promise((resolve) => setTimeout(resolve, 260));
+
+        const searchFallback = await evaluateCursor(cdp, `
+            const requestedModel = ${JSON.stringify(targetModel)};
+            const waitForUi = async (delay = 180) => {
+                await new Promise(r => setTimeout(r, delay));
+                await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+            };
+            const dispatchKey = (target, key) => {
+                const payload = { key, code: key, bubbles: true };
+                try { target.dispatchEvent(new KeyboardEvent('keydown', payload)); } catch (e) { /* ignore */ }
+                try { target.dispatchEvent(new KeyboardEvent('keyup', payload)); } catch (e) { /* ignore */ }
+                try { document.dispatchEvent(new KeyboardEvent('keydown', payload)); } catch (e) { /* ignore */ }
+                try { document.dispatchEvent(new KeyboardEvent('keyup', payload)); } catch (e) { /* ignore */ }
+            };
+            const closeMenu = () => {
+                document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+                document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', bubbles: true }));
+            };
+
+            const searchInput = __cr.findModelSearchInput(__cr.findModelMenuRoot() || document) || __cr.findModelSearchInput(document);
+            if (!searchInput) {
+                closeMenu();
+                return { error: 'model_search_input_not_found', currentModel: __cr.getModelText() || 'Unknown' };
+            }
+
+            __cr.setInputValue(searchInput, requestedModel);
+            await waitForUi(180);
+
+            let option = __cr.findDropdownMenuItem(requestedModel, __cr.findMenuContainers());
+            if (option) {
+                __cr.click(option);
+                await waitForUi(260);
+            } else {
+                dispatchKey(searchInput, 'ArrowDown');
+                await new Promise(r => setTimeout(r, 80));
+                dispatchKey(searchInput, 'Enter');
+                await waitForUi(260);
+            }
+
+            const currentModel = __cr.getModelText() || 'Unknown';
+            closeMenu();
+            if (currentModel.toLowerCase() !== requestedModel.toLowerCase()) {
+                return { error: 'model_search_submit_failed', currentModel };
+            }
+
+            return {
+                success: true,
+                currentModel,
+                via: 'search-fallback'
+            };
+        `, {
+            accept: (value) => value && typeof value === 'object'
+        });
+
+        if (searchFallback?.success) {
+            return {
+                success: true,
+                currentModel: searchFallback.currentModel || targetModel,
+                available: menuState.options || []
+            };
+        }
+    }
 
     if (!menuState?.buttonPoint || !targetEntry) {
         return result;
@@ -2274,8 +2685,9 @@ async function setModelToggle(cdp, toggleKey, enabled) {
     const result = await evaluateCursor(cdp, `
         const requestedToggle = ${JSON.stringify(toggleLabel)};
         const desiredEnabled = ${enabled === undefined ? 'null' : JSON.stringify(!!enabled)};
+        let rootMenu = __cr.findModelMenuRoot();
         const modelButton = __cr.findModelButton();
-        if (!modelButton) return { error: 'model_button_not_found' };
+        if (!modelButton && !rootMenu) return { error: 'model_button_not_found' };
         const escapeRegExp = (value) => String(value || '').replace(/[-/\\\\^$*+?.()|[\\]{}]/g, '\\\\$&');
         const toggleMatcher = new RegExp('^' + escapeRegExp(requestedToggle) + '(?:\\\\b|\\\\s)', 'i');
 
@@ -2314,18 +2726,20 @@ async function setModelToggle(cdp, toggleKey, enabled) {
                 })[0]?.element || null;
         };
 
-        let toggleRow = __cr.findModelToggleRow(requestedToggle) || findToggleRowAnywhere();
-        if (!toggleRow) {
+        let toggleRow = __cr.findModelToggleRow(requestedToggle, rootMenu) || findToggleRowAnywhere();
+        if (!toggleRow && modelButton) {
             __cr.click(modelButton);
             await waitForMenu();
-            toggleRow = __cr.findModelToggleRow(requestedToggle) || findToggleRowAnywhere();
+            rootMenu = __cr.findModelMenuRoot();
+            toggleRow = __cr.findModelToggleRow(requestedToggle, rootMenu) || findToggleRowAnywhere();
         }
 
-        if (!toggleRow) {
+        if (!toggleRow && modelButton) {
             // If the menu was already open, the first click can close it. Retry once.
             __cr.click(modelButton);
             await waitForMenu();
-            toggleRow = __cr.findModelToggleRow(requestedToggle) || findToggleRowAnywhere();
+            rootMenu = __cr.findModelMenuRoot();
+            toggleRow = __cr.findModelToggleRow(requestedToggle, rootMenu) || findToggleRowAnywhere();
         }
 
         const menuState = __cr.getModelMenuState();
@@ -2347,8 +2761,22 @@ async function setModelToggle(cdp, toggleKey, enabled) {
         }
 
         const updatedState = __cr.getModelMenuState();
+        const updatedToggle = Array.isArray(updatedState.toggles)
+            ? updatedState.toggles.find((toggle) =>
+                toggle?.key === requestedToggle.toLowerCase().replace(/\s+/g, '-')
+                || String(toggle?.label || '').trim().toLowerCase() === requestedToggle.toLowerCase()
+            )
+            : null;
         document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
         document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', bubbles: true }));
+
+        if (desiredEnabled !== null && (!updatedToggle || updatedToggle.enabled !== desiredEnabled)) {
+            return {
+                error: 'model_toggle_apply_mismatch',
+                toggles: updatedState.toggles || [],
+                currentModel: updatedState.current || __cr.getModelText() || 'Unknown'
+            };
+        }
 
         return {
             success: true,
@@ -2407,7 +2835,7 @@ async function setModelToggle(cdp, toggleKey, enabled) {
             ? refreshedMenuState.toggles.find((toggle) => toggle?.key === requestedToggle)
             : null;
 
-        if (!refreshedToggle || enabled === undefined || refreshedToggle.enabled === !!enabled) {
+        if ((enabled === undefined && refreshedToggle) || (refreshedToggle && refreshedToggle.enabled === !!enabled)) {
             return {
                 success: true,
                 toggles: refreshedMenuState.toggles || [],
@@ -2421,17 +2849,50 @@ async function setModelToggle(cdp, toggleKey, enabled) {
 
 async function getDropdownOptions(cdp, kind) {
     const normalizedKind = kind === 'model' ? 'model' : 'mode';
-    const result = await evaluateCursor(cdp, `
+    const buttonState = await evaluateCursor(cdp, `
         const kind = ${JSON.stringify(normalizedKind)};
         const button = kind === 'model' ? __cr.findModelButton() : __cr.findModeButton();
-        if (!button) return { error: kind + '_button_not_found', options: [] };
-
-        __cr.click(button);
-        await new Promise(r => setTimeout(r, 250));
-        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-
         const current = kind === 'model' ? (__cr.getModelText() || 'Unknown') : (__cr.getModeText() || 'Unknown');
+        const menuAlreadyOpen = kind === 'model' && !!__cr.findModelMenuRoot();
+        if (!button && !menuAlreadyOpen) return { error: kind + '_button_not_found', options: [] };
+        if (!button) {
+            return {
+                success: true,
+                kind,
+                current,
+                menuAlreadyOpen,
+                buttonPoint: null
+            };
+        }
+
         const buttonRect = button.getBoundingClientRect();
+        return {
+            success: true,
+            kind,
+            current,
+            menuAlreadyOpen,
+            buttonPoint: {
+                x: kind === 'mode'
+                    ? Math.round(buttonRect.left + Math.max(14, Math.min(buttonRect.width * 0.35, buttonRect.width / 2)))
+                    : Math.round(buttonRect.left + (buttonRect.width / 2)),
+                y: Math.round(buttonRect.top + (buttonRect.height / 2))
+            }
+        };
+    `, {
+        accept: (value) => value && typeof value === 'object'
+    });
+    if (!buttonState || buttonState.error) {
+        return buttonState;
+    }
+
+    if (buttonState.buttonPoint && !buttonState.menuAlreadyOpen) {
+        await clickAtPoint(cdp, buttonState.buttonPoint.x, buttonState.buttonPoint.y);
+        await new Promise((resolve) => setTimeout(resolve, 260));
+    }
+
+    const result = await evaluateCursor(cdp, `
+        const kind = ${JSON.stringify(normalizedKind)};
+        const current = kind === 'model' ? (__cr.getModelText() || 'Unknown') : (__cr.getModeText() || 'Unknown');
         const normalizeText = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
         const menus = __cr.findMenuContainers();
 
@@ -2472,12 +2933,32 @@ async function getDropdownOptions(cdp, kind) {
             const matchingMenus = menus.filter(menu => __cr.textOf(menu).toLowerCase().includes(current.toLowerCase()));
             if (matchingMenus.length) scopedMenus = matchingMenus;
 
-            const options = __cr.getMenuItemTexts(scopedMenus)
-                .map(normalizeText)
-                .filter(text => text && text.length <= 100)
-                .slice(0, 50);
-            normalizedOptions = options.length
-                ? options
+            const seen = new Set();
+            const modeItems = scopedMenus
+                .flatMap(menu => __cr.getMenuItems(menu))
+                .map(item => ({
+                    title: normalizeText(item.title),
+                    rect: item.element?.getBoundingClientRect?.() || null
+                }))
+                .filter(item => item.rect && /^(agent|plan|debug|ask|fast|planning|manual)$/i.test(item.title));
+
+            normalizedOptions = [];
+            targets = [];
+            for (const item of modeItems) {
+                const key = item.title.toLowerCase();
+                if (seen.has(key)) continue;
+                seen.add(key);
+                normalizedOptions.push(item.title);
+                targets.push({
+                    kind: 'option',
+                    title: item.title,
+                    x: Math.round(item.rect.left + (item.rect.width / 2)),
+                    y: Math.round(item.rect.top + (item.rect.height / 2))
+                });
+            }
+
+            normalizedOptions = normalizedOptions.length
+                ? normalizedOptions
                 : (current && current !== 'Unknown' ? [current] : []);
         }
 
@@ -2489,10 +2970,6 @@ async function getDropdownOptions(cdp, kind) {
             kind,
             current,
             options: normalizedOptions,
-            buttonPoint: {
-                x: Math.round(buttonRect.left + (buttonRect.width / 2)),
-                y: Math.round(buttonRect.top + (buttonRect.height / 2))
-            },
             searchPlaceholder,
             toggles,
             autoAvailable,
@@ -2505,45 +2982,109 @@ async function getDropdownOptions(cdp, kind) {
     `, {
         accept: (value) => value && typeof value === 'object'
     });
+    if (result && !result.error) {
+        result.buttonPoint = buttonState.buttonPoint;
+    }
 
     if (normalizedKind === 'model' && result && !result.error) {
+        const fallbackAutoDescription = 'Balanced quality and speed, recommended for most tasks';
+        const fallbackModelItems = [
+            { value: 'Composer 1.5', icon: 'cloud' },
+            { value: 'GPT-5.4', icon: 'cloud' },
+            { value: 'GPT-5.3 Codex', icon: 'cloud' },
+            { value: 'Sonnet 4.6', icon: 'cloud' },
+            { value: 'Opus 4.6', icon: 'cloud' },
+            { value: 'Gemini 3 Flash', icon: 'cloud' },
+            { value: 'gpt-4', icon: '' }
+        ];
+        const fallbackToggleDefs = [
+            { key: 'auto', label: 'Auto', description: fallbackAutoDescription, enabled: false },
+            { key: 'max-mode', label: 'MAX Mode', description: '', enabled: false },
+            { key: 'multi-model', label: 'Use Multiple Models', description: '', enabled: false }
+        ];
+        const iconByValue = new Map(fallbackModelItems.map((item) => [item.value.toLowerCase(), item.icon]));
+        const mergeModelItems = (...lists) => {
+            const seen = new Set();
+            const merged = [];
+
+            lists.flat().forEach((entry) => {
+                const value = String(
+                    typeof entry === 'string'
+                        ? entry
+                        : (entry?.value || entry?.name || '')
+                ).trim();
+
+                if (!value || /^auto$/i.test(value)) return;
+
+                const key = value.toLowerCase();
+                if (seen.has(key)) return;
+                seen.add(key);
+
+                const explicitIcon = typeof entry === 'object' && entry ? String(entry.icon || '').trim() : '';
+                merged.push({
+                    value,
+                    icon: explicitIcon || iconByValue.get(key) || ''
+                });
+            });
+
+            return merged;
+        };
         const hasStructuredMenu =
             !!result.searchPlaceholder ||
             !!result.footerLabel ||
             (Array.isArray(result.toggles) && result.toggles.length >= 2) ||
             (Array.isArray(result.options) && result.options.length >= 3);
+        const fallbackCurrent = result.current && result.current !== 'Unknown' ? result.current : 'Auto';
+        const needsCatalogAugment =
+            !hasStructuredMenu ||
+            !result.footerLabel ||
+            !Array.isArray(result.options) ||
+            result.options.length < fallbackModelItems.length;
+
+        result.current = fallbackCurrent;
+        result.searchPlaceholder = result.searchPlaceholder || 'Search models';
+        result.toggles = fallbackToggleDefs.map((fallbackToggle) => {
+            const incoming = Array.isArray(result.toggles)
+                ? result.toggles.find((toggle) =>
+                    toggle?.key === fallbackToggle.key ||
+                    String(toggle?.label || '').trim().toLowerCase() === fallbackToggle.label.toLowerCase()
+                )
+                : null;
+
+            return {
+                key: incoming?.key || fallbackToggle.key,
+                label: incoming?.label || fallbackToggle.label,
+                description: String(incoming?.description || fallbackToggle.description || '')
+                    .replace(new RegExp('^(?:' + escapeRegExp(incoming?.label || fallbackToggle.label) + '\\s*)+', 'i'), '')
+                    .trim(),
+                enabled: typeof incoming?.enabled === 'boolean'
+                    ? incoming.enabled
+                    : (fallbackToggle.key === 'auto' ? /^auto$/i.test(fallbackCurrent) : fallbackToggle.enabled)
+            };
+        });
+
+        const currentItem = fallbackCurrent && !/^auto$/i.test(fallbackCurrent)
+            ? [{ value: fallbackCurrent, icon: iconByValue.get(fallbackCurrent.toLowerCase()) || '' }]
+            : [];
+        const mergedItems = mergeModelItems(
+            currentItem,
+            Array.isArray(result.items) ? result.items : [],
+            Array.isArray(result.options) ? result.options : [],
+            needsCatalogAugment ? fallbackModelItems : []
+        );
+
+        result.items = mergedItems;
+        result.options = mergedItems.map((item) => item.value);
+        result.autoAvailable = true;
+        result.autoEnabled = result.toggles.find((toggle) => toggle.key === 'auto')?.enabled || /^auto$/i.test(fallbackCurrent);
+        result.autoLabel = result.autoLabel || 'Auto';
+        result.autoDescription = String(result.autoDescription || fallbackAutoDescription || '')
+            .replace(/^(?:auto\s*)+/i, '')
+            .trim() || fallbackAutoDescription;
+        result.footerLabel = result.footerLabel || (mergedItems.length ? 'Add Models' : '');
 
         if (!hasStructuredMenu) {
-            const fallbackCurrent = result.current && result.current !== 'Unknown' ? result.current : 'Auto';
-            const fallbackAutoDescription = 'Balanced quality and speed, recommended for most tasks';
-            result.current = fallbackCurrent;
-            result.searchPlaceholder = 'Search models';
-            result.toggles = [
-                {
-                    key: 'auto',
-                    label: 'Auto',
-                    description: fallbackAutoDescription,
-                    enabled: /^auto$/i.test(fallbackCurrent)
-                },
-                {
-                    key: 'max-mode',
-                    label: 'MAX Mode',
-                    description: '',
-                    enabled: false
-                },
-                {
-                    key: 'multi-model',
-                    label: 'Use Multiple Models',
-                    description: '',
-                    enabled: false
-                }
-            ];
-            result.options = ['Composer 1.5', 'GPT-5.4', 'GPT-5.3 Codex', 'Sonnet 4.6', 'Opus 4.6'];
-            result.autoAvailable = true;
-            result.autoEnabled = /^auto$/i.test(fallbackCurrent);
-            result.autoLabel = 'Auto';
-            result.autoDescription = fallbackAutoDescription;
-            result.footerLabel = '';
+            result.targets = Array.isArray(result.targets) ? result.targets : [];
         }
     }
 
@@ -2649,8 +3190,8 @@ async function getChatHistory(cdp) {
     });
 
     const titlesMatch = (left, right) => {
-        const a = String(left || '').trim().toLowerCase();
-        const b = String(right || '').trim().toLowerCase();
+        const a = String(left || '').replace(/[\u2026.]+$/g, '').trim().toLowerCase();
+        const b = String(right || '').replace(/[\u2026.]+$/g, '').trim().toLowerCase();
         if (!a || !b) return false;
         return a === b || a.includes(b) || b.includes(a);
     };
@@ -2669,6 +3210,99 @@ async function getChatHistory(cdp) {
 async function selectChat(cdp, chatTitle) {
     const targetTitle = String(chatTitle || '').trim();
     if (!targetTitle) return { error: 'Chat title required' };
+
+    const titlesMatch = (left, right) => {
+        const a = String(left || '').replace(/[\u2026.]+$/g, '').trim().toLowerCase();
+        const b = String(right || '').replace(/[\u2026.]+$/g, '').trim().toLowerCase();
+        if (!a || !b) return false;
+        return a === b || a.includes(b) || b.includes(a);
+    };
+
+    const tabSelection = await evaluateCursor(cdp, `
+        const desiredTitle = ${JSON.stringify(targetTitle)};
+        const desiredLower = desiredTitle.toLowerCase();
+        const container = __cr.findChatTabsContainer();
+        if (!container) return { success: false, reason: 'chat_tabs_not_found' };
+
+        const tabs = __cr.getChatTabElements(container)
+            .map((element) => ({
+                element,
+                title: String(element.getAttribute('aria-label') || __cr.textOf(element) || '').trim(),
+                active: __cr.isTabActive(element)
+            }))
+            .filter((tab) => tab.title && !/^more actions(?:\\.\\.\\.)?$/i.test(tab.title));
+
+        const target = tabs
+            .filter((tab) => {
+                const titleLower = tab.title.toLowerCase();
+                return titleLower === desiredLower ||
+                    titleLower.includes(desiredLower) ||
+                    desiredLower.includes(titleLower);
+            })
+            .sort((a, b) => {
+                const aExact = a.title.toLowerCase() === desiredLower ? 1 : 0;
+                const bExact = b.title.toLowerCase() === desiredLower ? 1 : 0;
+                if (bExact !== aExact) return bExact - aExact;
+                return b.title.length - a.title.length;
+            })[0];
+
+        if (!target) {
+            return {
+                success: false,
+                reason: 'chat_tab_not_found',
+                available: tabs.map((tab) => tab.title)
+            };
+        }
+
+        const rect = target.element.getBoundingClientRect();
+        if (!target.active) {
+            __cr.click(target.element);
+        }
+        return {
+            success: true,
+            method: 'chat_tab',
+            title: target.title,
+            alreadyActive: target.active,
+            target: {
+                x: rect.left + (rect.width / 2),
+                y: rect.top + (rect.height / 2)
+            }
+        };
+    `, {
+        accept: (value) => value && typeof value === 'object'
+    });
+
+    if (tabSelection?.success) {
+        if (!tabSelection.alreadyActive) {
+            await new Promise(resolve => setTimeout(resolve, 300));
+        }
+
+        let activeCheck = await evaluateCursor(cdp, `
+            const activeChatTitle = __cr.getActiveChatTitle() || '';
+            return { activeChatTitle };
+        `, {
+            accept: (value) => value && typeof value === 'object'
+        });
+
+        if (!tabSelection.alreadyActive && tabSelection.target && !titlesMatch(activeCheck?.activeChatTitle, tabSelection.title)) {
+            await clickAtPoint(cdp, tabSelection.target.x, tabSelection.target.y);
+            await new Promise(resolve => setTimeout(resolve, 300));
+            activeCheck = await evaluateCursor(cdp, `
+                const activeChatTitle = __cr.getActiveChatTitle() || '';
+                return { activeChatTitle };
+            `, {
+                accept: (value) => value && typeof value === 'object'
+            });
+        }
+
+        if (tabSelection.alreadyActive || titlesMatch(activeCheck?.activeChatTitle, tabSelection.title)) {
+            return {
+                success: true,
+                method: tabSelection.method,
+                title: activeCheck?.activeChatTitle || tabSelection.title
+            };
+        }
+    }
 
     const opener = await evaluateCursor(cdp, `
         const desiredTitle = ${JSON.stringify(targetTitle)};
@@ -2831,8 +3465,53 @@ async function getAppState(cdp) {
     };
 
     if (result?.mode) {
-        const normalizedMode = String(result.mode).trim().toLowerCase();
-        result.mode = modeAliasMap[normalizedMode] || result.mode;
+        const normalizedMode = normalizeUiStateText(result.mode).toLowerCase();
+        result.mode = modeAliasMap[normalizedMode] || normalizeUiStateText(result.mode);
+        if (!isPlausibleUiMode(result.mode)) {
+            result.mode = 'Unknown';
+        }
+    }
+
+    if (result?.model) {
+        result.model = normalizeUiStateText(result.model);
+        if (!isPlausibleUiModel(result.model)) {
+            result.model = 'Unknown';
+        }
+    }
+
+    if (result && lastAppState && typeof lastAppState === 'object') {
+        if ((!result.mode || result.mode === 'Unknown') && lastAppState.mode && lastAppState.mode !== 'Unknown') {
+            result.mode = lastAppState.mode;
+        }
+        if ((!result.model || result.model === 'Unknown') && lastAppState.model && lastAppState.model !== 'Unknown') {
+            result.model = lastAppState.model;
+        }
+        if (!result.activeChatTitle && lastAppState.activeChatTitle) {
+            result.activeChatTitle = lastAppState.activeChatTitle;
+        }
+        if ((!Array.isArray(result.chatTabs) || !result.chatTabs.length) && Array.isArray(lastAppState.chatTabs) && lastAppState.chatTabs.length) {
+            result.chatTabs = lastAppState.chatTabs;
+        }
+    }
+
+    if ((result?.mode === 'Unknown' || result?.model === 'Unknown') && cdp) {
+        try {
+            if (result.mode === 'Unknown') {
+                const modeState = await getDropdownOptions(cdp, 'mode');
+                if (modeState?.current && modeState.current !== 'Unknown') {
+                    result.mode = modeState.current;
+                }
+            }
+
+            if (result.model === 'Unknown') {
+                const modelState = await getDropdownOptions(cdp, 'model');
+                if (modelState?.current && modelState.current !== 'Unknown') {
+                    result.model = modelState.current;
+                }
+            }
+        } catch (error) {
+            // Keep best-effort state; fallbacks above already applied where possible.
+        }
     }
 
     return result;
@@ -2847,6 +3526,22 @@ function hashString(str) {
         hash = hash & hash;
     }
     return hash.toString(36);
+}
+
+function normalizeUiStateText(value) {
+    return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function isPlausibleUiMode(value) {
+    const text = normalizeUiStateText(value);
+    return !!text && text.length <= 24 && /^(agent|plan|debug|ask|fast|planning|manual)\b/i.test(text);
+}
+
+function isPlausibleUiModel(value) {
+    const text = normalizeUiStateText(value);
+    if (!text || text.length > 48) return false;
+    if (/[{};]/.test(text) || /\.monaco-|cursorremote|upgrade to pro|launchpad|ctrl\+|https?:|\.png\b/i.test(text)) return false;
+    return /^(auto|composer\s+\d+(?:\.\d+)*|gpt-\d+(?:\.\d+)*(?:\s+codex)?|sonnet\s+\d+(?:\.\d+)*|opus\s+\d+(?:\.\d+)*|gemini\s+\d+(?:\s+flash)?|claude(?:\s+[\w.-]+)?|o\d(?:\s+[\w.-]+)?)$/i.test(text);
 }
 
 // Check if a request is from the same Wi-Fi (internal network)
@@ -2888,6 +3583,14 @@ async function initCDP() {
 async function startPolling(wss) {
     let lastErrorLog = 0;
     let isConnecting = false;
+    const broadcast = (payload) => {
+        const message = JSON.stringify(payload);
+        wss.clients.forEach(client => {
+            if (client.readyState === WebSocket.OPEN) {
+                try { client.send(message); } catch (e) { /* ignore dead sockets */ }
+            }
+        });
+    };
 
     const poll = async () => {
         if (!cdpConnection || (cdpConnection.ws && cdpConnection.ws.readyState !== WebSocket.OPEN)) {
@@ -2914,6 +3617,20 @@ async function startPolling(wss) {
         }
 
         try {
+            const appState = await getAppState(cdpConnection);
+            if (appState && typeof appState === 'object') {
+                const appStateHash = hashString(JSON.stringify(appState));
+                if (appStateHash !== lastAppStateHash) {
+                    lastAppState = appState;
+                    lastAppStateHash = appStateHash;
+                    broadcast({
+                        type: 'app_state_update',
+                        hash: appStateHash,
+                        state: appState
+                    });
+                }
+            }
+
             const snapshot = await captureSnapshot(cdpConnection);
             if (snapshot && !snapshot.error) {
                 const hash = hashString(JSON.stringify({
@@ -2929,14 +3646,9 @@ async function startPolling(wss) {
 
                     // Broadcast lightweight notification via WebSocket (hash only)
                     // Full snapshot data stays on server, client fetches via HTTP only when hash changes
-                    const wsNotify = JSON.stringify({
+                    broadcast({
                         type: 'snapshot_update',
                         hash: hash
-                    });
-                    wss.clients.forEach(client => {
-                        if (client.readyState === WebSocket.OPEN) {
-                            try { client.send(wsNotify); } catch (e) { /* ignore dead sockets */ }
-                        }
                     });
 
                     console.log(`Ã°Å¸â€œÂ¸ Snapshot updated(hash: ${hash})`);
