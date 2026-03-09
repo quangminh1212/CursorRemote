@@ -30,6 +30,7 @@ Thumbs.db
 # Build/Temp
 dist/
 build/
+.playwright-cli/
 .DS_Store
 
 # SSL Certificates (generated locally)
