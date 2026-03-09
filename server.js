@@ -31,27 +31,65 @@ try {
 // ============================================================
 // FILE LOGGING SYSTEM - All output goes to log.txt for debugging
 // ============================================================
-const LOG_FILE = join(RUNTIME_ROOT, 'cursor-remote.log');
+const LOG_FILE = join(RUNTIME_ROOT, 'log.txt');
+const LOG_BACKUP_FILE = join(RUNTIME_ROOT, 'log.old.txt');
 const MAX_LOG_SIZE = 5 * 1024 * 1024; // 5MB auto-rotate
+const RESET_LOG_ON_START = process.env.CR_RESET_LOG_ON_START === '1';
+
+if (RESET_LOG_ON_START) {
+    try {
+        if (fs.existsSync(LOG_FILE)) fs.unlinkSync(LOG_FILE);
+        if (fs.existsSync(LOG_BACKUP_FILE)) fs.unlinkSync(LOG_BACKUP_FILE);
+    } catch (e) {
+        // Ignore reset failures and continue logging to the existing file.
+    }
+}
 
 // Rotate log if too large
 try {
     if (fs.existsSync(LOG_FILE) && fs.statSync(LOG_FILE).size > MAX_LOG_SIZE) {
-        const backupPath = join(RUNTIME_ROOT, 'log.old.txt');
-        if (fs.existsSync(backupPath)) fs.unlinkSync(backupPath);
-        fs.renameSync(LOG_FILE, backupPath);
+        if (fs.existsSync(LOG_BACKUP_FILE)) fs.unlinkSync(LOG_BACKUP_FILE);
+        fs.renameSync(LOG_FILE, LOG_BACKUP_FILE);
     }
 } catch (e) { /* ignore rotation errors */ }
 
 const logStream = fs.createWriteStream(LOG_FILE, { flags: 'a', encoding: 'utf8' });
-let terminalConsoleAvailable = true;
+const TERMINAL_LOG_ENABLED = process.env.CR_TERMINAL_LOG !== '0';
+let terminalConsoleAvailable = TERMINAL_LOG_ENABLED;
+let requestLogCounter = 0;
+
+function stringifyLogArg(value) {
+    if (value instanceof Error) {
+        return value.stack || value.message || String(value);
+    }
+    if (typeof value === 'object' && value !== null) {
+        try {
+            return JSON.stringify(value);
+        } catch (error) {
+            return `[Unserializable Object: ${error.message}]`;
+        }
+    }
+    return String(value);
+}
 
 function formatLogLine(level, args) {
     const ts = new Date().toISOString();
-    const msg = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+    const msg = args.map(stringifyLogArg).join(' ');
     // Strip emoji for clean log file on Windows
     const clean = msg.replace(/[\u{1F000}-\u{1FFFF}]|[\u{2600}-\u{27BF}]|[\u{FE00}-\u{FE0F}]|[\u{1F900}-\u{1F9FF}]|[\u{200D}]|[\u{20E3}]|[\u{E0020}-\u{E007F}]/gu, '').trim();
     return `[${ts}] [${level}] ${clean}\n`;
+}
+
+function sanitizeLogUrl(rawUrl = '') {
+    try {
+        const parsed = new URL(rawUrl || '/', 'http://localhost');
+        if (parsed.searchParams.has('key')) {
+            parsed.searchParams.set('key', '[redacted]');
+        }
+        return `${parsed.pathname}${parsed.search}`;
+    } catch {
+        return String(rawUrl || '/').replace(/([?&]key=)[^&]*/ig, '$1[redacted]');
+    }
 }
 
 // Intercept console methods â†’ write to both terminal AND log.txt
@@ -2640,6 +2678,30 @@ async function createServer() {
     // Use a secure session secret from .env if available
     const sessionSecret = process.env.SESSION_SECRET || 'cursor_secret_key_1337';
     app.use(cookieParser(sessionSecret));
+
+    app.use((req, res, next) => {
+        const requestId = ++requestLogCounter;
+        const startedAt = Date.now();
+        const requestTarget = sanitizeLogUrl(req.originalUrl || req.url);
+        const forwardedFor = req.headers['x-forwarded-for'];
+        const clientIp = typeof forwardedFor === 'string'
+            ? forwardedFor.split(',')[0].trim()
+            : req.socket?.remoteAddress || req.ip || 'unknown';
+
+        console.log(`[REQ ${requestId}] -> ${req.method} ${requestTarget} from ${clientIp}`);
+
+        let responseLogged = false;
+        const logResponse = (eventName) => {
+            if (responseLogged) return;
+            responseLogged = true;
+            const durationMs = Date.now() - startedAt;
+            console.log(`[REQ ${requestId}] <- ${res.statusCode} ${req.method} ${requestTarget} ${durationMs}ms (${eventName})`);
+        };
+
+        res.once('finish', () => logResponse('finish'));
+        res.once('close', () => logResponse(res.writableEnded ? 'close' : 'aborted'));
+        next();
+    });
 
     // Ngrok Bypass Middleware
     app.use((req, res, next) => {

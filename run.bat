@@ -6,10 +6,16 @@ chcp 65001 >nul 2>&1
 cd /d "%~dp0"
 set "CR_RUNTIME_DIR=%CD%"
 
-set "RUN_LOG=%CD%\run-launch.log"
+set "RUN_LOG=%CD%\log.txt"
+set "RUN_LOG_OLD=%CD%\log.old.txt"
+call :reset_runtime_logs
 set "CAN_PAUSE=1"
+set "CAN_CLEAR_SCREEN=1"
 for /f "usebackq delims=" %%r in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "[Console]::IsInputRedirected" 2^>nul`) do (
     if /i "%%r"=="True" set "CAN_PAUSE=0"
+)
+for /f "usebackq delims=" %%r in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "[Console]::IsOutputRedirected" 2^>nul`) do (
+    if /i "%%r"=="True" set "CAN_CLEAR_SCREEN=0"
 )
 call :log "========================================"
 call :log "Launcher started in %CD%"
@@ -20,6 +26,7 @@ set "OPEN_BROWSER=1"
 set "VERIFY_STARTUP=1"
 set "REQUESTED_PORT="
 set "CR_VISIBLE_CURSOR=1"
+set "CR_TERMINAL_LOG=0"
 
 :parse_args
 if "%~1"=="" goto args_done
@@ -244,6 +251,7 @@ set "CR_SKIP_AUTO_LAUNCH=1"
 
 echo [6/7] Preparing runtime...
 call :stop_workspace_servers
+call :reset_runtime_logs
 
 set "PREFERRED_PORT=%REQUESTED_PORT%"
 if not defined PREFERRED_PORT set "PREFERRED_PORT=3000"
@@ -316,7 +324,9 @@ if not "!TAURI_EXIT!"=="0" (
 exit /b !TAURI_EXIT!
 
 :server_mode
+set "RESET_SERVER_LOG=0"
 if /i "!SERVER_MODE!"=="dev" (
+    set "RESET_SERVER_LOG=1"
     set "SERVER_COMMAND=npx nodemon --watch server.js --watch public --watch generate_ssl.js --ext js,html,css,json --ignore log.txt --ignore log.old.txt --ignore debug.log --ignore node_modules --signal SIGTERM --delay 2 server.js"
 ) else (
     set "SERVER_COMMAND=node server.js"
@@ -328,19 +338,19 @@ echo  Server:     !BROWSER_URL!
 echo  Runtime:    !SERVER_MODE!
 echo  Open UI:    !OPEN_BROWSER!
 echo  Verify:     !VERIFY_STARTUP!
-echo  Console:    current window
-echo  Logs:       cursor-remote.log, run-launch.log
+echo  Console:    host only
+echo  Logs:       log.txt
 echo ============================================
 echo.
 
 call :log "Starting browser mode with command: !SERVER_COMMAND!"
-echo       Starting server in the current console window...
-start /b "" cmd /c "cd /d ""%CD%"" && set PORT=!PORT! && set CR_SKIP_AUTO_LAUNCH=1 && !SERVER_COMMAND!"
+echo       Starting background server...
+start /b "" cmd /c "cd /d ""%CD%"" && set PORT=!PORT! && set CR_SKIP_AUTO_LAUNCH=1 && set CR_TERMINAL_LOG=!CR_TERMINAL_LOG! && set CR_RESET_LOG_ON_START=!RESET_SERVER_LOG! && !SERVER_COMMAND!"
 
 if "!VERIFY_STARTUP!"=="1" (
     call :verify_server_startup
     if errorlevel 1 (
-        echo [ERROR] Startup verification failed. Check cursor-remote.log and run-launch.log.
+        echo [ERROR] Startup verification failed. Check log.txt.
         call :log "Startup verification failed"
         call :pause_if_interactive
         exit /b 1
@@ -355,11 +365,11 @@ if "!OPEN_BROWSER!"=="1" (
     call :log "Opened browser at !BROWSER_URL!"
 )
 
-echo [OK] Cursor Remote is running.
-echo      Local URL: !BROWSER_URL!
-if defined MOBILE_URL echo      Mobile URL: !MOBILE_URL!
-echo      Server is attached to this console window.
-echo.
+call :log "Host ready: !BROWSER_URL!"
+if defined MOBILE_URL call :log "Mobile host ready: !MOBILE_URL!"
+if "!CAN_CLEAR_SCREEN!"=="1" cls >nul 2>&1
+echo Host: !BROWSER_URL!
+if defined MOBILE_URL echo Mobile: !MOBILE_URL!
 exit /b 0
 
 :verify_server_startup
@@ -531,7 +541,14 @@ call :log "Cursor window action: unknown"
 exit /b 0
 
 :log
->> "%RUN_LOG%" echo [%date% %time%] %~1
+set "LOG_MESSAGE=%~1"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$path = $env:RUN_LOG; $line = '[' + (Get-Date).ToString('dd/MM/yyyy HH:mm:ss,ff') + '] ' + $env:LOG_MESSAGE; try { $fs = [System.IO.File]::Open($path, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite); $fs.Seek(0, [System.IO.SeekOrigin]::End) > $null; $bytes = [System.Text.Encoding]::UTF8.GetBytes($line + [Environment]::NewLine); $fs.Write($bytes, 0, $bytes.Length); $fs.Dispose() } catch { }" >nul 2>&1
+set "LOG_MESSAGE="
+exit /b 0
+
+:reset_runtime_logs
+if exist "%RUN_LOG%" del /f /q "%RUN_LOG%" >nul 2>&1
+if exist "%RUN_LOG_OLD%" del /f /q "%RUN_LOG_OLD%" >nul 2>&1
 exit /b 0
 
 :pause_if_interactive
