@@ -188,19 +188,36 @@
                             stroke-width="2.5">
                             <polyline points="18 15 12 9 6 15"></polyline>
                         </svg>
-                        <span id="modeText">Fast</span>
+                        <span id="modeText">Agent</span>
                     </div>
                     <div class="dropdown-menu" id="modeMenu">
-                        <div class="dropdown-title">Conversation mode</div>
-                        <div class="dropdown-option" data-value="Planning">
-                            <div class="dropdown-option-name">Planning</div>
-                            <div class="dropdown-option-desc">Agent can plan before executing tasks. Use for deep
-                                research, complex tasks, or collaborative work.</div>
+                        <div class="mode-dropdown-option active" data-value="Agent" data-request-value="Agent">
+                            <span class="mode-dropdown-main">
+                                <span class="mode-dropdown-icon" aria-hidden="true">∞</span>
+                                <span class="mode-dropdown-label">Agent</span>
+                            </span>
+                            <span class="mode-dropdown-check" aria-hidden="true">&#10003;</span>
                         </div>
-                        <div class="dropdown-option active" data-value="Fast">
-                            <div class="dropdown-option-name">Fast</div>
-                            <div class="dropdown-option-desc">Agent executes tasks directly for faster routine work.
-                            </div>
+                        <div class="mode-dropdown-option" data-value="Plan" data-request-value="Plan">
+                            <span class="mode-dropdown-main">
+                                <span class="mode-dropdown-icon" aria-hidden="true">≣</span>
+                                <span class="mode-dropdown-label">Plan</span>
+                            </span>
+                            <span class="mode-dropdown-check" aria-hidden="true"></span>
+                        </div>
+                        <div class="mode-dropdown-option" data-value="Debug" data-request-value="Debug">
+                            <span class="mode-dropdown-main">
+                                <span class="mode-dropdown-icon" aria-hidden="true">◌</span>
+                                <span class="mode-dropdown-label">Debug</span>
+                            </span>
+                            <span class="mode-dropdown-check" aria-hidden="true"></span>
+                        </div>
+                        <div class="mode-dropdown-option" data-value="Ask" data-request-value="Ask">
+                            <span class="mode-dropdown-main">
+                                <span class="mode-dropdown-icon" aria-hidden="true">◳</span>
+                                <span class="mode-dropdown-label">Ask</span>
+                            </span>
+                            <span class="mode-dropdown-check" aria-hidden="true"></span>
                         </div>
                     </div>
                 </div>
