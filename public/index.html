@@ -16,17 +16,50 @@
 </head>
 
 <body>
-    <header class="header">
-        <h1 class="header-title">
-            <img class="header-logo" src="/logo.png" alt="" aria-hidden="true">
-            <span class="sr-only">Cursor Remote</span>
-        </h1>
+    <div class="app-chrome">
+        <div class="app-chrome-left">
+            <div class="app-brand">
+                <img class="header-logo" src="/logo.png" alt="" aria-hidden="true">
+                <span class="app-brand-title">Cursor Remote</span>
+            </div>
+        </div>
+        <div class="app-chrome-center">
+            <div class="live-indicator">
+                <div class="status-dot disconnected" id="statusDot"></div>
+                <span id="statusText">Connecting...</span>
+            </div>
+        </div>
+        <div class="app-chrome-right">
+            <span class="app-chip" id="sidebarProtocolChip">Local webview</span>
+            <span class="app-chip" id="sidebcrThemeChip">Dark theme</span>
+        </div>
+    </div>
 
-        <div class="header-controls">
+    <header class="header">
+        <div class="header-left">
             <button class="new-chat-btn" id="newChatBtn" aria-label="New Chat" data-tooltip="New Chat">
                 <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
                     <line x1="12" y1="5" x2="12" y2="19"></line>
                     <line x1="5" y1="12" x2="19" y2="12"></line>
+                </svg>
+                <span class="new-chat-label">New Chat</span>
+            </button>
+
+            <div class="header-summary">
+                <span class="header-summary-title" id="heroStatusTitle">Connecting...</span>
+                <span class="header-summary-divider"></span>
+                <span class="header-summary-meta" id="heroModeText">Agent</span>
+                <span class="header-summary-meta" id="heroModelText">Auto</span>
+            </div>
+            <span class="sr-only" id="heroStatusDetail">Waiting for desktop state and the first live snapshot.</span>
+            <span class="sr-only" id="heroModelDetail">Transport status pending.</span>
+        </div>
+
+        <div class="header-controls">
+            <button class="header-icon-btn" id="historyQuickBtn" aria-label="Chat History" data-tooltip="History">
+                <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="8"></circle>
+                    <path d="M12 8v4l3 2"></path>
                 </svg>
             </button>
 
@@ -48,20 +81,14 @@
             </button>
 
             <div class="settings-wrapper">
-                <button class="settings-btn" id="settingsBtn" aria-label="Settings" data-tooltip="Settings">
+                <button class="settings-btn" id="settingsBtn" aria-label="Settings" data-tooltip="More">
                     <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
-                        <circle cx="12" cy="12" r="3"></circle>
-                        <path
-                            d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z">
-                        </path>
+                        <circle cx="5" cy="12" r="1.5"></circle>
+                        <circle cx="12" cy="12" r="1.5"></circle>
+                        <circle cx="19" cy="12" r="1.5"></circle>
                     </svg>
                 </button>
                 <div class="settings-dropdown" id="settingsDropdown">
-                    <div class="settings-dropdown-status">
-                        <div class="status-dot disconnected" id="statusDot"></div>
-                        <span id="statusText">Connecting...</span>
-                    </div>
-                    <div class="settings-divider"></div>
                     <button class="settings-option" id="historyBtn" aria-label="Chat History">
                         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
                             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -134,6 +161,13 @@
         aria-label="Choose files to attach" title="Choose files to attach">
 
     <div class="input-section">
+        <div class="home-hero">
+            <p class="home-hero-eyebrow">Cursor-style workspace</p>
+            <h2 class="home-hero-title">Control the active Cursor chat with a mirrored live view.</h2>
+            <p class="home-hero-copy">Keep the shell close to Cursor while preserving direct control, history access,
+                and agent actions from the web view.</p>
+        </div>
+
         <div class="home-context" id="homeContext">
             <div class="home-context-agent" id="homeContextAgent">Cursor</div>
         </div>
@@ -176,7 +210,7 @@
                             stroke-width="2.5">
                             <polyline points="18 15 12 9 6 15"></polyline>
                         </svg>
-                        <span id="modelText">Claude Opus 4.6 (Thinking)</span>
+                        <span id="modelText">Auto</span>
                     </div>
                     <div class="dropdown-menu" id="modelMenu"></div>
                 </div>
@@ -200,6 +234,27 @@
             <p class="home-disclaimer">AI may make mistakes. Double-check all generated code.</p>
         </div>
     </div>
+
+    <footer class="status-dock">
+        <div class="status-dock-section status-dock-left">
+            <span class="dock-pill">Cursor Tab</span>
+            <span class="dock-divider"></span>
+            <span class="dock-value" id="sidebarTransportText">Local HTTP + WS</span>
+        </div>
+        <div class="status-dock-section status-dock-center">
+            <span class="dock-metric">
+                <span class="dock-label">Mode</span>
+                <strong id="sidebarModeText">Agent</strong>
+            </span>
+            <span class="dock-metric">
+                <span class="dock-label">Model</span>
+                <strong id="sidebarModelText">Auto</strong>
+            </span>
+        </div>
+        <div class="status-dock-section status-dock-right">
+            <span class="dock-soft-chip">Auto Accept: OFF</span>
+        </div>
+    </footer>
 
     <div class="dropdown-backdrop" id="dropdownBackdrop"></div>
 
