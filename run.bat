@@ -4,6 +4,7 @@ title Cursor Remote Launcher
 chcp 65001 >nul 2>&1
 
 cd /d "%~dp0"
+set "CR_RUNTIME_DIR=%CD%"
 
 set "RUN_LOG=%CD%\run-launch.log"
 set "CAN_PAUSE=1"
@@ -29,9 +30,9 @@ if /i "%~1"=="--dev" set "SERVER_MODE=dev"
 if /i "%~1"=="--no-open" set "OPEN_BROWSER=0"
 if /i "%~1"=="--no-verify" set "VERIFY_STARTUP=0"
 if /i "%~1"=="--port" (
-    shift
-    call set "REQUESTED_PORT=%%~1"
-    if defined REQUESTED_PORT (
+    set "NEXT_ARG=%~2"
+    if defined NEXT_ARG if not "!NEXT_ARG:~0,1!"=="-" (
+        set "REQUESTED_PORT=!NEXT_ARG!"
         call :validate_port_number "!REQUESTED_PORT!"
         if "!PORT_VALID!"=="0" (
             echo       [WARN] Ignoring invalid --port value: !REQUESTED_PORT!
@@ -42,6 +43,7 @@ if /i "%~1"=="--port" (
         echo       [WARN] --port was provided without a value. Ignoring.
         call :log "--port missing value"
     )
+    if defined NEXT_ARG if not "!NEXT_ARG:~0,1!"=="-" shift
 )
 shift
 goto parse_args
@@ -108,8 +110,15 @@ if exist ".env" (
     call :log ".env missing; using server defaults"
 )
 
-set "BROWSER_PROTOCOL=http"
-if exist "certs\server.key" if exist "certs\server.cert" set "BROWSER_PROTOCOL=https"
+echo       Ensuring local HTTPS certificates...
+call :ensure_https_certificates
+if errorlevel 1 (
+    echo [ERROR] HTTPS is required, but certificates could not be prepared.
+    call :log "HTTPS certificate preparation failed"
+    call :pause_if_interactive
+    exit /b 1
+)
+set "BROWSER_PROTOCOL=https"
 echo.
 
 echo [4/7] Detecting target Cursor workspace...
@@ -364,7 +373,7 @@ set "MOBILE_URL="
 echo       Waiting for the server to report ready state...
 for /l %%i in (1,1,45) do (
     set "VERIFY_RESULT="
-    for /f "usebackq delims=" %%r in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference = 'SilentlyContinue'; [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }; try { $base = '!BROWSER_URL!'; $health = Invoke-RestMethod -Uri ($base + '/health') -TimeoutSec 2; $state = Invoke-RestMethod -Uri ($base + '/app-state') -TimeoutSec 2; $snapshotOk = $false; try { $snapshot = Invoke-RestMethod -Uri ($base + '/snapshot') -TimeoutSec 2; $snapshotOk = [bool]$snapshot.html } catch { $snapshotOk = $false }; if ($health.status -eq 'ok' -and $health.cdpConnected -and $snapshotOk -and $state.editorFound) { Write-Output ('ready|' + $state.mode + '|' + $state.model + '|' + $state.hasChat) } elseif ($health.status -eq 'ok' -and $health.cdpConnected) { Write-Output ('connected|' + $state.mode + '|' + $state.model + '|' + $state.hasChat) } elseif ($health.status -eq 'ok') { Write-Output 'http' } } catch { }"`) do (
+    for /f "usebackq delims=" %%r in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference = 'SilentlyContinue'; try { $base = '!BROWSER_URL!'; $healthRaw = & curl.exe -ks ($base + '/health'); if ($LASTEXITCODE -ne 0 -or -not $healthRaw) { exit 0 }; $health = ConvertFrom-Json -InputObject $healthRaw; $stateRaw = & curl.exe -ks ($base + '/app-state'); if ($LASTEXITCODE -ne 0 -or -not $stateRaw) { exit 0 }; $state = ConvertFrom-Json -InputObject $stateRaw; $snapshotOk = $false; try { $snapshotRaw = & curl.exe -ks ($base + '/snapshot'); if ($LASTEXITCODE -eq 0 -and $snapshotRaw) { $snapshot = ConvertFrom-Json -InputObject $snapshotRaw; $snapshotOk = [bool]$snapshot.html } } catch { $snapshotOk = $false }; if ($health.status -eq 'ok' -and $health.cdpConnected -and $snapshotOk -and $state.editorFound) { Write-Output ('ready|' + $state.mode + '|' + $state.model + '|' + $state.hasChat) } elseif ($health.status -eq 'ok' -and $health.cdpConnected) { Write-Output ('connected|' + $state.mode + '|' + $state.model + '|' + $state.hasChat) } elseif ($health.status -eq 'ok') { Write-Output 'http' } } catch { }"`) do (
         set "VERIFY_RESULT=%%r"
     )
 
@@ -398,7 +407,7 @@ call :log "Timed out waiting for startup readiness"
 exit /b 1
 
 :verify_ready
-for /f "usebackq delims=" %%u in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference = 'SilentlyContinue'; [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }; try { $r = Invoke-RestMethod -Uri '!BROWSER_URL!/qr-info' -TimeoutSec 2; if ($r.connectUrl) { $r.connectUrl } } catch { }"`) do (
+for /f "usebackq delims=" %%u in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference = 'SilentlyContinue'; try { $response = & curl.exe -ks '!BROWSER_URL!/qr-info'; if ($LASTEXITCODE -eq 0 -and $response) { $r = ConvertFrom-Json -InputObject $response; if ($r.connectUrl) { $r.connectUrl } } } catch { }"`) do (
     set "MOBILE_URL=%%u"
 )
 
@@ -443,6 +452,32 @@ set /a PORT_NUMBER+=0 2>nul
 if errorlevel 1 exit /b 0
 if !PORT_NUMBER! GEQ 1 if !PORT_NUMBER! LEQ 65535 set "PORT_VALID=1"
 exit /b 0
+
+:ensure_https_certificates
+if exist "certs\server.key" if exist "certs\server.cert" (
+    echo       HTTPS certificates OK.
+    call :log "HTTPS certificates OK"
+    exit /b 0
+)
+
+echo       HTTPS certificates missing. Generating...
+call :log "HTTPS certificates missing; generating"
+call node generate_ssl.js
+if errorlevel 1 (
+    echo       [ERROR] Failed to generate HTTPS certificates.
+    call :log "HTTPS certificate generation failed"
+    exit /b 1
+)
+
+if exist "certs\server.key" if exist "certs\server.cert" (
+    echo       HTTPS certificates ready.
+    call :log "HTTPS certificates ready"
+    exit /b 0
+)
+
+echo       [ERROR] HTTPS certificates were not created.
+call :log "HTTPS certificates still missing after generation"
+exit /b 1
 
 :stop_workspace_servers
 echo       Stopping existing Cursor Remote server processes for this workspace...
