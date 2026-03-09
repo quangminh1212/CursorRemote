@@ -211,7 +211,7 @@ function updateWorkspaceChrome(overrides = {}) {
 }
 
 // --- Fullscreen Toggle ---
-if (!document.fullscreenEnabled || typeof document.documentElement.requestFullscreen !== 'function' || (isLoopbackHost && window.innerWidth <= 520)) {
+if (!document.fullscreenEnabled || typeof document.documentElement.requestFullscreen !== 'function') {
     fullscreenBtn.style.display = 'none';
 } else {
     fullscreenBtn.addEventListener('click', () => {
@@ -412,7 +412,9 @@ const MODEL_FALLBACK_OPTIONS = [
     { name: 'GPT-5.4' },
     { name: 'GPT-5.3 Codex' },
     { name: 'Sonnet 4.6' },
-    { name: 'Opus 4.6' }
+    { name: 'Opus 4.6' },
+    { name: 'Gemini 3 Flash' },
+    { name: 'gpt-4' }
 ];
 const MODEL_FALLBACK_TOGGLES = [
     { key: 'auto', label: 'Auto', description: 'Balanced quality and speed, recommended for most tasks', enabled: false },
@@ -519,7 +521,7 @@ function getModelDropdownFallbackState(overrides = {}) {
             enabled: toggle.key === 'auto' ? fallbackAutoEnabled : toggle.enabled
         })),
         searchPlaceholder: 'Search models',
-        footerLabel: ''
+        footerLabel: 'Add Models'
     };
 }
 
@@ -1018,10 +1020,10 @@ ${snapshotRootScope} .markdown-root {
 }
 
 ${snapshotRootScope} .rounded-lg {
-    background-color: rgba(128, 128, 128, 0.06) !important;
-    border: 1px solid var(--border-color, #2a2b32) !important;
-    border-radius: 8px !important;
-    padding: 8px !important;
+    background-color: rgba(255, 255, 255, 0.04) !important;
+    border: 1px solid rgba(255, 255, 255, 0.06) !important;
+    border-radius: 10px !important;
+    padding: 6px !important;
     margin: 4px 0 !important;
 }
 
@@ -1133,10 +1135,10 @@ ${snapshotRootScope} .markdown-root .space-y-4 {
 ${snapshotRootScope} .composer-tool-former-message,
 ${snapshotRootScope} .composer-tool-call-container,
 ${snapshotRootScope} .composer-terminal-tool-call-block-container {
-    background: rgba(16, 19, 24, 0.96) !important;
-    border: 1px solid rgba(255, 255, 255, 0.06) !important;
+    background: rgba(255, 255, 255, 0.03) !important;
+    border: 1px solid rgba(255, 255, 255, 0.05) !important;
     border-radius: 12px !important;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02) !important;
+    box-shadow: none !important;
 }
 
 ${snapshotRootScope} .composer-tool-call-control-row,
@@ -2055,7 +2057,8 @@ function normalizeModelDropdownState(data = {}) {
         options,
         toggles,
         searchPlaceholder: data.searchPlaceholder || fallback.searchPlaceholder,
-        footerLabel: data.footerLabel || ''
+        footerLabel: data.footerLabel || fallback.footerLabel || '',
+        compactAuto: document.body.classList.contains('home-screen') && /^auto$/i.test(current)
     };
 }
 
@@ -2122,10 +2125,36 @@ function buildModelDropdownMenu(menu, state) {
     const renderMenuContent = (filterText = '') => {
         const normalizedFilter = String(filterText || '').trim();
         const visibleToggles = Array.isArray(state.toggles) ? state.toggles : [];
+        const autoToggle = getAutoToggle(state);
+        const shouldUseCompactAutoMenu = !!state.compactAuto && !normalizedFilter && autoToggle;
 
         menu.classList.remove('auto-compact-menu');
         panel.classList.remove('home-auto-model-menu', 'compact-auto-menu');
         contentWrap.innerHTML = '';
+
+        if (shouldUseCompactAutoMenu) {
+            menu.classList.add('auto-compact-menu');
+            panel.classList.add('home-auto-model-menu', 'compact-auto-menu');
+
+            const toggleList = document.createElement('div');
+            toggleList.className = 'model-toggle-list';
+            const row = document.createElement('button');
+            row.type = 'button';
+            row.className = 'model-toggle-row' + (autoToggle.enabled ? ' active' : '');
+            row.dataset.toggleKey = autoToggle.key;
+            row.innerHTML = `
+                <span class="model-toggle-copy">
+                    <span class="model-toggle-title">${escapeHtml(autoToggle.label)}</span>
+                    ${autoToggle.description ? `<span class="model-toggle-desc">${escapeHtml(autoToggle.description)}</span>` : ''}
+                </span>
+                <span class="model-toggle-switch${autoToggle.enabled ? ' is-on' : ''}" aria-hidden="true">
+                    <span class="model-toggle-knob"></span>
+                </span>
+            `;
+            toggleList.appendChild(row);
+            contentWrap.appendChild(toggleList);
+            return;
+        }
 
         if (visibleToggles.length) {
             const toggleList = document.createElement('div');
