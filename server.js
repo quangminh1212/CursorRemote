@@ -1,20 +1,14 @@
 #!/usr/bin/env node
 import 'dotenv/config';
-import express from 'express';
-import compression from 'compression';
-import cookieParser from 'cookie-parser';
-import { WebSocketServer } from 'ws';
+import fs from 'fs';
 import http from 'http';
 import https from 'https';
-import fs from 'fs';
 import os from 'os';
 import WebSocket from 'ws';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { inspectUI } from './ui_inspector.js';
 import { execFileSync, execSync, spawn } from 'child_process';
-import multer from 'multer';
-import QRCode from 'qrcode';
+import { createServer } from './src/server/http/create-server.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -56,7 +50,6 @@ try {
 const logStream = fs.createWriteStream(LOG_FILE, { flags: 'a', encoding: 'utf8' });
 const TERMINAL_LOG_ENABLED = process.env.CR_TERMINAL_LOG !== '0';
 let terminalConsoleAvailable = TERMINAL_LOG_ENABLED;
-let requestLogCounter = 0;
 
 function stringifyLogArg(value) {
     if (value instanceof Error) {
@@ -92,7 +85,7 @@ function sanitizeLogUrl(rawUrl = '') {
     }
 }
 
-// Intercept console methods â†’ write to both terminal AND log.txt
+// Intercept console methods Ã¢â€ â€™ write to both terminal AND log.txt
 const _origLog = console.log.bind(console);
 const _origWarn = console.warn.bind(console);
 const _origError = console.error.bind(console);
@@ -133,16 +126,16 @@ process.on('uncaughtException', (err) => {
         try { logStream.write(formatLogLine('WARN', ['Suppressed EPIPE from terminal output.'])); } catch (e) { /* ignore */ }
         return;
     }
-    console.error('ðŸ’¥ UNCAUGHT EXCEPTION (process kept alive):', err.message);
+    console.error('Ã°Å¸â€™Â¥ UNCAUGHT EXCEPTION (process kept alive):', err.message);
     console.error('   Stack:', err.stack);
 });
 
 process.on('unhandledRejection', (reason) => {
-    console.error('ðŸ’¥ UNHANDLED REJECTION (process kept alive):', reason);
+    console.error('Ã°Å¸â€™Â¥ UNHANDLED REJECTION (process kept alive):', reason);
 });
 
 console.log('========================================');
-console.log('ðŸš€ Cursor Remote starting...');
+console.log('Ã°Å¸Å¡â‚¬ Cursor Remote starting...');
 console.log(`   PID: ${process.pid}`);
 console.log(`   Node: ${process.version}`);
 console.log(`   Time: ${new Date().toISOString()}`);
@@ -158,8 +151,6 @@ const APP_PASSWORD = process.env.APP_PASSWORD || 'Cursor';
 const AUTH_COOKIE_NAME = 'cr_auth_token';
 const AUTO_LAUNCH_cursor = process.env.CR_SKIP_AUTO_LAUNCH !== '1';
 const FORCE_VISIBLE_CURSOR = process.env.CR_VISIBLE_CURSOR === '1';
-// Note: hashString is defined later, so we'll initialize the token inside createServer or use a simple string for now.
-let AUTH_TOKEN = 'cr_default_token';
 
 
 // Shared CDP connection
@@ -589,13 +580,15 @@ const __cr = (() => {
                 searchPlaceholder: '',
                 toggles: [],
                 options: current && current !== 'Unknown' && !/^auto$/i.test(current) ? [current] : [],
-                footerLabel: ''
+                footerLabel: '',
+                targets: []
             };
         }
 
         const searchInput = findModelSearchInput(root);
         const searchPlaceholder = normalizeText(searchInput?.getAttribute('placeholder') || searchInput?.getAttribute('aria-label') || '');
         const rows = getModelMenuRows(root);
+        const targets = [];
         const toggleDefs = [
             { key: 'auto', label: 'Auto', matcher: /^auto(?:\b|\s)/i },
             { key: 'max-mode', label: 'MAX Mode', matcher: /^max mode(?:\b|\s)/i },
@@ -607,6 +600,14 @@ const __cr = (() => {
             if (!row) return null;
 
             const description = normalizeText(row.text.replace(new RegExp('^' + escapeRegExp(def.label) + '\\\\s*', 'i'), ''));
+            targets.push({
+                kind: 'toggle',
+                key: def.key,
+                label: def.label,
+                title: def.label,
+                x: Math.round(row.rect.left + (row.rect.width / 2)),
+                y: Math.round(row.rect.top + (row.rect.height / 2))
+            });
             return {
                 key: def.key,
                 label: def.label,
@@ -631,6 +632,12 @@ const __cr = (() => {
             if (seen.has(key)) continue;
             seen.add(key);
             options.push(title);
+            targets.push({
+                kind: 'option',
+                title,
+                x: Math.round(row.rect.left + (row.rect.width / 2)),
+                y: Math.round(row.rect.top + (row.rect.height / 2))
+            });
         }
 
         if (!options.length && current && current !== 'Unknown' && !/^auto$/i.test(current)) {
@@ -642,7 +649,8 @@ const __cr = (() => {
             searchPlaceholder,
             toggles,
             options,
-            footerLabel: rows.some(row => /^add models?$/i.test(row.text)) ? 'Add Models' : ''
+            footerLabel: rows.some(row => /^add models?$/i.test(row.text)) ? 'Add Models' : '',
+            targets
         };
     };
 
@@ -926,7 +934,7 @@ async function killPortProcess(port) {
             for (const pid of pids) {
                 try {
                     execSync(`taskkill /PID ${pid} /F`, { stdio: 'pipe' });
-                    console.log(`âš ï¸  Killed existing process on port ${port} (PID: ${pid})`);
+                    console.log(`Ã¢Å¡Â Ã¯Â¸Â  Killed existing process on port ${port} (PID: ${pid})`);
                 } catch (e) { /* Process may have already exited */ }
             }
         } else {
@@ -935,7 +943,7 @@ async function killPortProcess(port) {
             for (const pid of pids) {
                 try {
                     execSync(`kill -9 ${pid}`, { stdio: 'pipe' });
-                    console.log(`âš ï¸  Killed existing process on port ${port} (PID: ${pid})`);
+                    console.log(`Ã¢Å¡Â Ã¯Â¸Â  Killed existing process on port ${port} (PID: ${pid})`);
                 } catch (e) { /* Process may have already exited */ }
             }
         }
@@ -957,12 +965,12 @@ async function killPortProcess(port) {
             testServer.listen(port, '0.0.0.0');
         });
         if (isFree) {
-            console.log(`âœ… Port ${port} is free`);
+            console.log(`Ã¢Å“â€¦ Port ${port} is free`);
             return;
         }
         await new Promise(r => setTimeout(r, checkInterval));
     }
-    console.warn(`âš ï¸  Port ${port} may still be in use after ${maxWait}ms wait`);
+    console.warn(`Ã¢Å¡Â Ã¯Â¸Â  Port ${port} may still be in use after ${maxWait}ms wait`);
 }
 
 // Get local IP address for mobile access
@@ -1158,7 +1166,7 @@ async function launchcursorWithCDP() {
         // but reads it from %APPDATA%\Cursor\argv.json (Electron/VS Code pattern)
         const argvInjected = ensureCursorArgvCDP(PRIMARY_CDP_PORT);
         if (argvInjected) {
-            console.log(`✅ Injected remote-debugging-port=${PRIMARY_CDP_PORT} into Cursor argv.json`);
+            console.log(`âœ… Injected remote-debugging-port=${PRIMARY_CDP_PORT} into Cursor argv.json`);
         }
 
         // Step 2: Kill and restart Cursor so it picks up the new argv.json
@@ -1196,12 +1204,12 @@ async function launchcursorWithCDP() {
             ]);
 
             if (quickExitCode === null) {
-                // Process still running after 3s — CLI flag accepted
+                // Process still running after 3s â€” CLI flag accepted
                 child.unref();
                 launched = true;
                 console.log('Cursor launched with --remote-debugging-port CLI flag');
             } else if (quickExitCode === 9 || quickExitCode === 1) {
-                // Exit code 9 = "bad option" — Cursor rejected the CLI flag
+                // Exit code 9 = "bad option" â€” Cursor rejected the CLI flag
                 console.log(`Cursor rejected --remote-debugging-port CLI flag (exit ${quickExitCode}), using argv.json fallback`);
             } else if (quickExitCode === 0) {
                 // Exit 0 = single-instance detected, delegated to existing process
@@ -1246,9 +1254,9 @@ async function launchcursorWithCDP() {
 
         const ready = await waitForCDP(45000); // Longer timeout for Cursor startup
         if (ready) {
-            console.log(`✅ Cursor CDP is ready on port ${PRIMARY_CDP_PORT}.`);
+            console.log(`âœ… Cursor CDP is ready on port ${PRIMARY_CDP_PORT}.`);
         } else {
-            console.warn('⚠️  Cursor launched, but CDP is still not available after 45s.');
+            console.warn('âš ï¸  Cursor launched, but CDP is still not available after 45s.');
             console.warn('   Ensure Cursor reads argv.json from: ' + getCursorArgvPath());
             console.warn('   Or start Cursor manually with: --remote-debugging-port=9000');
         }
@@ -1331,11 +1339,11 @@ async function discoverCDP() {
                 if (browser.includes('cursor') || userAgent.includes('cursor')) {
                     isCursorApp = true;
                 } else {
-                    console.log(`⚠️  Port ${port} belongs to "${versionInfo.Browser || 'unknown'}" (not Cursor) — skipping`);
+                    console.log(`âš ï¸  Port ${port} belongs to "${versionInfo.Browser || 'unknown'}" (not Cursor) â€” skipping`);
                     continue;
                 }
             } catch (verErr) {
-                // /json/version failed but /json/list might still work — proceed with URL-based check
+                // /json/version failed but /json/list might still work â€” proceed with URL-based check
             }
 
             // Step 2: Discover targets from this verified Cursor port
@@ -1354,14 +1362,14 @@ async function discoverCDP() {
             // Priority 1: Standard Workbench (The main window)
             const workbench = list.find(t => isCursorTarget(t) && (t.url?.includes('workbench.html') || (t.title && t.title.includes('workbench'))));
             if (workbench && workbench.webSocketDebuggerUrl) {
-                console.log('✅ Found Cursor Workbench target:', workbench.title, `(port ${port})`);
+                console.log('âœ… Found Cursor Workbench target:', workbench.title, `(port ${port})`);
                 return { port, url: workbench.webSocketDebuggerUrl };
             }
 
             // Priority 2: Jetski/Launchpad (Fallback)
             const jetski = list.find(t => isCursorTarget(t) && (t.url?.includes('jetski') || t.title === 'Launchpad'));
             if (jetski && jetski.webSocketDebuggerUrl) {
-                console.log('✅ Found Cursor Jetski/Launchpad target:', jetski.title, `(port ${port})`);
+                console.log('âœ… Found Cursor Jetski/Launchpad target:', jetski.title, `(port ${port})`);
                 return { port, url: jetski.webSocketDebuggerUrl };
             }
 
@@ -1419,7 +1427,7 @@ async function connectCDP(url) {
 
     // Handle CDP WebSocket disconnect - triggers auto-reconnect in polling loop
     ws.on('close', () => {
-        console.warn('ðŸ”Œ CDP WebSocket closed - will auto-reconnect');
+        console.warn('Ã°Å¸â€Å’ CDP WebSocket closed - will auto-reconnect');
         // Reject all pending calls
         for (const [id, { reject, timeoutId }] of pendingCalls) {
             clearTimeout(timeoutId);
@@ -1430,7 +1438,7 @@ async function connectCDP(url) {
     });
 
     ws.on('error', (err) => {
-        console.error('ðŸ”Œ CDP WebSocket error:', err.message);
+        console.error('Ã°Å¸â€Å’ CDP WebSocket error:', err.message);
         // Don't null cdpConnection here - 'close' event will handle it
     });
 
@@ -1565,7 +1573,7 @@ async function injectMessage(cdp, text) {
             } : null
         };
     `, {
-        accept: (value) => value && typeof value === 'object'
+        accept: (value) => value && typeof value === 'object' && !value.error
     });
 
     if (!prepared?.ok) {
@@ -1616,7 +1624,7 @@ async function injectMessage(cdp, text) {
             } : null
         };
     `, {
-        accept: (value) => value && typeof value === 'object'
+        accept: (value) => value && typeof value === 'object' && !value.error
     });
 
     let method = 'cdp_enter';
@@ -1674,7 +1682,7 @@ async function injectFile(cdp, filePath) {
     const absolutePath = filePath.startsWith('/') ? filePath : join(__dirname, filePath).replace(/\\/g, '/');
     const winPath = absolutePath.replace(/\//g, '\\');
 
-    console.log(`ðŸ“‚ Injecting file via CDP: ${winPath}`);
+    console.log(`Ã°Å¸â€œâ€š Injecting file via CDP: ${winPath}`);
 
     try {
         // Step 1: Enable file chooser interception
@@ -1702,7 +1710,7 @@ async function injectFile(cdp, filePath) {
 
         // Step 3: Click the context/media "+" button in IDE (bottom-left, near editor)
         const clickResult = await clickContextPlusButton(cdp);
-        console.log(`ðŸ–±ï¸ Click context+ result:`, clickResult);
+        console.log(`Ã°Å¸â€“Â±Ã¯Â¸Â Click context+ result:`, clickResult);
 
         if (!clickResult.success) {
             // Disable interception before returning
@@ -1713,14 +1721,14 @@ async function injectFile(cdp, filePath) {
         // Step 4: Wait for file chooser to open, then accept with our file
         try {
             const chooserParams = await fileChooserPromise;
-            console.log(`ðŸ“ File chooser opened, mode: ${chooserParams.mode}`);
+            console.log(`Ã°Å¸â€œÂ File chooser opened, mode: ${chooserParams.mode}`);
 
             await cdp.call("Page.handleFileChooser", {
                 action: "accept",
                 files: [winPath]
             });
 
-            console.log(`âœ… File injected successfully: ${winPath}`);
+            console.log(`Ã¢Å“â€¦ File injected successfully: ${winPath}`);
 
             // Disable interception
             try { await cdp.call("Page.setInterceptFileChooserDialog", { enabled: false }); } catch (e) { }
@@ -1729,7 +1737,7 @@ async function injectFile(cdp, filePath) {
         } catch (e) {
             // File chooser didn't open - perhaps the button doesn't open file dialog
             // Try fallback: drag-and-drop via CDP Input events
-            console.warn(`âš ï¸ File chooser approach failed: ${e.message}. Trying fallback...`);
+            console.warn(`Ã¢Å¡Â Ã¯Â¸Â File chooser approach failed: ${e.message}. Trying fallback...`);
             try { await cdp.call("Page.setInterceptFileChooserDialog", { enabled: false }); } catch (e2) { }
 
             // Fallback: Use DOM.setFileInputFiles if there's a file input
@@ -1737,7 +1745,7 @@ async function injectFile(cdp, filePath) {
         }
     } catch (e) {
         try { await cdp.call("Page.setInterceptFileChooserDialog", { enabled: false }); } catch (e2) { }
-        console.error(`âŒ File injection error: ${e.message}`);
+        console.error(`Ã¢ÂÅ’ File injection error: ${e.message}`);
         return { success: false, error: e.message };
     }
 }
@@ -1763,7 +1771,7 @@ async function clickContextPlusButton(cdp) {
             title: attachButton.getAttribute('title') || ''
         };
     `, {
-        accept: (value) => value && typeof value === 'object'
+        accept: (value) => value && typeof value === 'object' && !value.error
     });
 }
 
@@ -1866,7 +1874,7 @@ async function setMode(cdp, mode) {
             available
         };
     `, {
-        accept: (value) => value && typeof value === 'object'
+        accept: (value) => value && typeof value === 'object' && !value.error
     });
 }
 
@@ -1969,23 +1977,62 @@ async function setModel(cdp, modelName) {
     const targetModel = String(modelName || '').trim();
     if (!targetModel) return { error: 'Invalid model' };
 
-    return await evaluateCursor(cdp, `
+    const result = await evaluateCursor(cdp, `
         const requestedModel = ${JSON.stringify(targetModel)};
         const modelButton = __cr.findModelButton();
         if (!modelButton) return { error: 'model_button_not_found' };
+        const escapeRegExp = (value) => String(value || '').replace(/[-/\\\\^$*+?.()|[\\]{}]/g, '\\\\$&');
+        const optionMatcher = new RegExp('^' + escapeRegExp(requestedModel) + '(?:\\\\b|\\\\s|$)', 'i');
+        const waitForMenu = async () => {
+            await new Promise(r => setTimeout(r, 250));
+            await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+        };
+        const findOptionAnywhere = () => {
+            const selector = 'button, [role="menuitem"], [role="option"], [role="button"], label, a, div';
+            const seen = new Set();
+            return Array.from(document.querySelectorAll(selector))
+                .filter(el => __cr.isVisible(el))
+                .map(el => el.closest(selector) || el)
+                .filter(el => {
+                    if (!el || seen.has(el)) return false;
+                    seen.add(el);
+                    return true;
+                })
+                .map(el => ({
+                    element: el,
+                    text: String(__cr.textOf(el) || '').replace(/\\s+/g, ' ').trim(),
+                    rect: el.getBoundingClientRect()
+                }))
+                .filter(item =>
+                    item.text &&
+                    optionMatcher.test(item.text) &&
+                    item.rect.width > 50 &&
+                    item.rect.height >= 16 &&
+                    item.rect.height <= 120
+                )
+                .sort((a, b) => {
+                    const yDiff = a.rect.top - b.rect.top;
+                    return Math.abs(yDiff) > 1 ? yDiff : a.rect.left - b.rect.left;
+                })[0]?.element || null;
+        };
 
         const currentModel = __cr.getModelText();
         if (currentModel && currentModel.toLowerCase() === requestedModel.toLowerCase()) {
             return { success: true, alreadySet: true, currentModel };
         }
 
-        __cr.click(modelButton);
-        await new Promise(r => setTimeout(r, 250));
-        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-
         let rootMenu = __cr.findModelMenuRoot();
         let menus = rootMenu ? [rootMenu] : __cr.findMenuContainers();
-        let option = __cr.findDropdownMenuItem(requestedModel, menus);
+        let option = __cr.findDropdownMenuItem(requestedModel, menus) || findOptionAnywhere();
+        let searchSubmitUsed = false;
+
+        if (!option) {
+            __cr.click(modelButton);
+            await waitForMenu();
+            rootMenu = __cr.findModelMenuRoot();
+            menus = rootMenu ? [rootMenu] : __cr.findMenuContainers();
+            option = __cr.findDropdownMenuItem(requestedModel, menus) || findOptionAnywhere();
+        }
 
         if (!option) {
             const searchInput = __cr.findModelSearchInput(rootMenu || document);
@@ -1995,7 +2042,31 @@ async function setModel(cdp, modelName) {
                 await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
                 rootMenu = __cr.findModelMenuRoot();
                 menus = rootMenu ? [rootMenu] : __cr.findMenuContainers();
-                option = __cr.findDropdownMenuItem(requestedModel, menus);
+                option = __cr.findDropdownMenuItem(requestedModel, menus) || findOptionAnywhere();
+            }
+        }
+
+        if (!option && /^auto$/i.test(requestedModel)) {
+            option = __cr.findModelToggleRow('Auto') || findOptionAnywhere();
+        }
+
+        if (!option) {
+            // Retry once in case the first click closed a menu that was already open.
+            __cr.click(modelButton);
+            await waitForMenu();
+            rootMenu = __cr.findModelMenuRoot();
+            menus = rootMenu ? [rootMenu] : __cr.findMenuContainers();
+            option = __cr.findDropdownMenuItem(requestedModel, menus) || __cr.findModelToggleRow('Auto') || findOptionAnywhere();
+            if (!option) {
+                const searchInput = __cr.findModelSearchInput(rootMenu || document);
+                if (searchInput) {
+                    __cr.setInputValue(searchInput, requestedModel);
+                    await new Promise(r => setTimeout(r, 180));
+                    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+                    rootMenu = __cr.findModelMenuRoot();
+                    menus = rootMenu ? [rootMenu] : __cr.findMenuContainers();
+                    option = __cr.findDropdownMenuItem(requestedModel, menus) || __cr.findModelToggleRow('Auto') || findOptionAnywhere();
+                }
             }
         }
 
@@ -2003,11 +2074,46 @@ async function setModel(cdp, modelName) {
         const available = Array.isArray(menuState.options) && menuState.options.length
             ? menuState.options.slice(0, 80)
             : __cr.getMenuItemTexts(menus).slice(0, 40);
+        const toggleLabels = Array.isArray(menuState.toggles) ? menuState.toggles.map(toggle => toggle.label) : [];
+        const availableWithToggles = [...new Set([...toggleLabels, ...available])];
+
+        if (!option) {
+            const searchInput = __cr.findModelSearchInput(rootMenu || document);
+            if (searchInput) {
+                searchInput.focus();
+                __cr.setInputValue(searchInput, requestedModel);
+                await new Promise(r => setTimeout(r, 180));
+                const dispatchKey = (key) => {
+                    const payload = { key, code: key, bubbles: true };
+                    try { searchInput.dispatchEvent(new KeyboardEvent('keydown', payload)); } catch (e) { /* ignore */ }
+                    try { searchInput.dispatchEvent(new KeyboardEvent('keyup', payload)); } catch (e) { /* ignore */ }
+                    try { document.dispatchEvent(new KeyboardEvent('keydown', payload)); } catch (e) { /* ignore */ }
+                    try { document.dispatchEvent(new KeyboardEvent('keyup', payload)); } catch (e) { /* ignore */ }
+                };
+                dispatchKey('ArrowDown');
+                await new Promise(r => setTimeout(r, 80));
+                dispatchKey('Enter');
+                await new Promise(r => setTimeout(r, 260));
+                searchSubmitUsed = true;
+            }
+        }
+
+        if (!option && searchSubmitUsed) {
+            const currentAfterSearchSubmit = __cr.getModelText();
+            if (currentAfterSearchSubmit && currentAfterSearchSubmit.toLowerCase() === requestedModel.toLowerCase()) {
+                return {
+                    success: true,
+                    currentModel: currentAfterSearchSubmit,
+                    available: availableWithToggles,
+                    via: 'search-submit'
+                };
+            }
+        }
 
         if (!option) {
             document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
             document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', bubbles: true }));
-            return { error: 'model_option_not_found', currentModel, available };
+            return { error: 'model_option_not_found', currentModel, available: availableWithToggles };
         }
 
         __cr.click(option);
@@ -2016,11 +2122,42 @@ async function setModel(cdp, modelName) {
         return {
             success: true,
             currentModel: __cr.getModelText() || requestedModel,
-            available
+            available: availableWithToggles
         };
     `, {
-        accept: (value) => value && typeof value === 'object'
+        accept: (value) => value && typeof value === 'object' && !value.error
     });
+
+    if (result?.success) {
+        return result;
+    }
+
+    const menuState = await getDropdownOptions(cdp, 'model');
+    const currentModel = String(menuState?.current || result?.currentModel || '').trim();
+    if (currentModel && currentModel.toLowerCase() === targetModel.toLowerCase()) {
+        return { success: true, alreadySet: true, currentModel };
+    }
+
+    const targets = Array.isArray(menuState?.targets) ? menuState.targets : [];
+    const targetEntry = /^auto$/i.test(targetModel)
+        ? targets.find((target) => target.kind === 'toggle' && target.key === 'auto')
+        : targets.find((target) => target.kind === 'option' && String(target.title || '').trim().toLowerCase() === targetModel.toLowerCase());
+
+    if (!menuState?.buttonPoint || !targetEntry) {
+        return result;
+    }
+
+    await clickAtPoint(cdp, menuState.buttonPoint.x, menuState.buttonPoint.y);
+    await new Promise((resolve) => setTimeout(resolve, 260));
+    await clickAtPoint(cdp, targetEntry.x, targetEntry.y);
+    await new Promise((resolve) => setTimeout(resolve, 320));
+
+    const refreshedMenuState = await getDropdownOptions(cdp, 'model');
+    return {
+        success: true,
+        currentModel: refreshedMenuState.current || targetModel,
+        available: refreshedMenuState.options || []
+    };
 }
 
 async function setModelToggle(cdp, toggleKey, enabled) {
@@ -2033,17 +2170,63 @@ async function setModelToggle(cdp, toggleKey, enabled) {
         'multi-model': 'Use Multiple Models'
     })[requestedToggle] || toggleKey;
 
-    return await evaluateCursor(cdp, `
+    const result = await evaluateCursor(cdp, `
         const requestedToggle = ${JSON.stringify(toggleLabel)};
         const desiredEnabled = ${enabled === undefined ? 'null' : JSON.stringify(!!enabled)};
         const modelButton = __cr.findModelButton();
         if (!modelButton) return { error: 'model_button_not_found' };
+        const escapeRegExp = (value) => String(value || '').replace(/[-/\\\\^$*+?.()|[\\]{}]/g, '\\\\$&');
+        const toggleMatcher = new RegExp('^' + escapeRegExp(requestedToggle) + '(?:\\\\b|\\\\s)', 'i');
 
-        __cr.click(modelButton);
-        await new Promise(r => setTimeout(r, 250));
-        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+        const waitForMenu = async () => {
+            await new Promise(r => setTimeout(r, 250));
+            await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+        };
+        const findToggleRowAnywhere = () => {
+            const selector = 'button, [role="menuitem"], [role="option"], [role="button"], label, a, div';
+            const seen = new Set();
+            return Array.from(document.querySelectorAll(selector))
+                .filter(el => __cr.isVisible(el))
+                .map(el => el.closest(selector) || el)
+                .filter(el => {
+                    if (!el || seen.has(el)) return false;
+                    seen.add(el);
+                    return true;
+                })
+                .map(el => ({
+                    element: el,
+                    text: String(__cr.textOf(el) || '').replace(/\\s+/g, ' ').trim(),
+                    rect: el.getBoundingClientRect()
+                }))
+                .filter(item =>
+                    item.text &&
+                    toggleMatcher.test(item.text) &&
+                    item.rect.width > 50 &&
+                    item.rect.height >= 16 &&
+                    item.rect.height <= 120 &&
+                    !!(item.element.querySelector('[role="switch"], input[type="checkbox"], [aria-checked], [aria-pressed]') ||
+                        item.element.closest('[role="switch"], [aria-checked], [aria-pressed]'))
+                )
+                .sort((a, b) => {
+                    const yDiff = a.rect.top - b.rect.top;
+                    return Math.abs(yDiff) > 1 ? yDiff : a.rect.left - b.rect.left;
+                })[0]?.element || null;
+        };
 
-        const toggleRow = __cr.findModelToggleRow(requestedToggle);
+        let toggleRow = __cr.findModelToggleRow(requestedToggle) || findToggleRowAnywhere();
+        if (!toggleRow) {
+            __cr.click(modelButton);
+            await waitForMenu();
+            toggleRow = __cr.findModelToggleRow(requestedToggle) || findToggleRowAnywhere();
+        }
+
+        if (!toggleRow) {
+            // If the menu was already open, the first click can close it. Retry once.
+            __cr.click(modelButton);
+            await waitForMenu();
+            toggleRow = __cr.findModelToggleRow(requestedToggle) || findToggleRowAnywhere();
+        }
+
         const menuState = __cr.getModelMenuState();
         if (!toggleRow) {
             document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
@@ -2072,8 +2255,67 @@ async function setModelToggle(cdp, toggleKey, enabled) {
             currentModel: updatedState.current || __cr.getModelText() || 'Unknown'
         };
     `, {
-        accept: (value) => value && typeof value === 'object'
+        accept: (value) => value && typeof value === 'object' && !value.error
     });
+
+    if (result?.success) {
+        return result;
+    }
+
+    const menuState = await getDropdownOptions(cdp, 'model');
+    const currentToggle = Array.isArray(menuState?.toggles)
+        ? menuState.toggles.find((toggle) =>
+            toggle?.key === requestedToggle ||
+            String(toggle?.label || '').trim().toLowerCase() === toggleLabel.toLowerCase()
+        )
+        : null;
+
+    if (currentToggle && enabled !== undefined && currentToggle.enabled === !!enabled) {
+        return {
+            success: true,
+            toggles: menuState.toggles || [],
+            currentModel: menuState.current || 'Unknown',
+            alreadySet: true
+        };
+    }
+
+    if (requestedToggle === 'auto' && enabled === true) {
+        const autoResult = await setModel(cdp, 'Auto');
+        if (autoResult?.success) {
+            const refreshedMenuState = await getDropdownOptions(cdp, 'model');
+            return {
+                success: true,
+                toggles: refreshedMenuState.toggles || [],
+                currentModel: autoResult.currentModel || refreshedMenuState.current || 'Auto'
+            };
+        }
+    }
+
+    const targetEntry = Array.isArray(menuState?.targets)
+        ? menuState.targets.find((target) => target.kind === 'toggle' && target.key === requestedToggle)
+        : null;
+
+    if (menuState?.buttonPoint && targetEntry) {
+        await clickAtPoint(cdp, menuState.buttonPoint.x, menuState.buttonPoint.y);
+        await new Promise((resolve) => setTimeout(resolve, 260));
+        await clickAtPoint(cdp, targetEntry.x, targetEntry.y);
+        await new Promise((resolve) => setTimeout(resolve, 320));
+
+        const refreshedMenuState = await getDropdownOptions(cdp, 'model');
+        const refreshedToggle = Array.isArray(refreshedMenuState?.toggles)
+            ? refreshedMenuState.toggles.find((toggle) => toggle?.key === requestedToggle)
+            : null;
+
+        if (!refreshedToggle || enabled === undefined || refreshedToggle.enabled === !!enabled) {
+            return {
+                success: true,
+                toggles: refreshedMenuState.toggles || [],
+                currentModel: refreshedMenuState.current || result?.currentModel || 'Unknown'
+            };
+        }
+    }
+
+    return result;
 }
 
 async function getDropdownOptions(cdp, kind) {
@@ -2088,6 +2330,7 @@ async function getDropdownOptions(cdp, kind) {
         await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
 
         const current = kind === 'model' ? (__cr.getModelText() || 'Unknown') : (__cr.getModeText() || 'Unknown');
+        const buttonRect = button.getBoundingClientRect();
         const normalizeText = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
         const menus = __cr.findMenuContainers();
 
@@ -2099,12 +2342,14 @@ async function getDropdownOptions(cdp, kind) {
         let autoDescription = '';
         let toggles = [];
         let footerLabel = '';
+        let targets = [];
 
         if (kind === 'model') {
             const modelMenuState = __cr.getModelMenuState();
             searchPlaceholder = modelMenuState.searchPlaceholder || '';
             toggles = Array.isArray(modelMenuState.toggles) ? modelMenuState.toggles : [];
             footerLabel = modelMenuState.footerLabel || '';
+            targets = Array.isArray(modelMenuState.targets) ? modelMenuState.targets : [];
 
             const autoToggle = toggles.find(toggle => toggle.key === 'auto' || /^auto$/i.test(toggle.label || ''));
             if (autoToggle) {
@@ -2143,13 +2388,18 @@ async function getDropdownOptions(cdp, kind) {
             kind,
             current,
             options: normalizedOptions,
+            buttonPoint: {
+                x: Math.round(buttonRect.left + (buttonRect.width / 2)),
+                y: Math.round(buttonRect.top + (buttonRect.height / 2))
+            },
             searchPlaceholder,
             toggles,
             autoAvailable,
             autoEnabled,
             autoLabel,
             autoDescription,
-            footerLabel
+            footerLabel,
+            targets
         };
     `, {
         accept: (value) => value && typeof value === 'object'
@@ -2501,13 +2751,13 @@ function isLocalRequest(req) {
 
 // Initialize CDP connection
 async function initCDP() {
-    console.log('ðŸ” Discovering Cursor CDP endpoint...');
+    console.log('Ã°Å¸â€Â Discovering Cursor CDP endpoint...');
     const cdpInfo = await discoverCDP();
-    console.log(`âœ… Found cursor on port ${cdpInfo.port} `);
+    console.log(`Ã¢Å“â€¦ Found cursor on port ${cdpInfo.port} `);
 
-    console.log('ðŸ”Œ Connecting to CDP...');
+    console.log('Ã°Å¸â€Å’ Connecting to CDP...');
     cdpConnection = await connectCDP(cdpInfo.url);
-    console.log(`âœ… Connected! Found ${cdpConnection.contexts.length} execution contexts\n`);
+    console.log(`Ã¢Å“â€¦ Connected! Found ${cdpConnection.contexts.length} execution contexts\n`);
 }
 
 // Background polling
@@ -2518,18 +2768,18 @@ async function startPolling(wss) {
     const poll = async () => {
         if (!cdpConnection || (cdpConnection.ws && cdpConnection.ws.readyState !== WebSocket.OPEN)) {
             if (!isConnecting) {
-                console.log('ðŸ” Looking for Cursor CDP connection...');
+                console.log('Ã°Å¸â€Â Looking for Cursor CDP connection...');
                 isConnecting = true;
             }
             if (cdpConnection) {
                 // Was connected, now lost
-                console.log('ðŸ”„ CDP connection lost. Attempting to reconnect...');
+                console.log('Ã°Å¸â€â€ž CDP connection lost. Attempting to reconnect...');
                 cdpConnection = null;
             }
             try {
                 await initCDP();
                 if (cdpConnection) {
-                    console.log('âœ… CDP Connection established from polling loop');
+                    console.log('Ã¢Å“â€¦ CDP Connection established from polling loop');
                     isConnecting = false;
                 }
             } catch (err) {
@@ -2561,14 +2811,14 @@ async function startPolling(wss) {
                         }
                     });
 
-                    console.log(`ðŸ“¸ Snapshot updated(hash: ${hash})`);
+                    console.log(`Ã°Å¸â€œÂ¸ Snapshot updated(hash: ${hash})`);
                 }
             } else {
                 // Snapshot is null or has error
                 const now = Date.now();
                 if (!lastErrorLog || now - lastErrorLog > 10000) {
                     const errorMsg = snapshot?.error || 'No valid snapshot captured (check contexts)';
-                    console.warn(`âš ï¸  Snapshot capture issue: ${errorMsg} `);
+                    console.warn(`Ã¢Å¡Â Ã¯Â¸Â  Snapshot capture issue: ${errorMsg} `);
                     if (errorMsg.includes('container not found')) {
                         console.log('   (Tip: Ensure an active chat is open in cursor)');
                     }
@@ -2622,601 +2872,6 @@ function ensureHttpsCertificates() {
     return { keyPath, certPath, certsExist };
 }
 
-// Create Express app
-async function createServer() {
-    const app = express();
-
-    // Check for SSL certificates
-    const { keyPath, certPath, certsExist } = ensureHttpsCertificates();
-    if (!IS_EMBEDDED_RUNTIME && !certsExist) {
-        throw new Error('HTTPS certificates could not be prepared.');
-    }
-    const hasSSL = certsExist && !IS_EMBEDDED_RUNTIME;
-
-    let server;
-    let httpsServer = null;
-
-    if (certsExist && IS_EMBEDDED_RUNTIME) {
-        console.log('[EMBEDDED] SSL certificates detected, but embedded runtime will use local HTTP for webview compatibility.');
-    }
-
-    if (hasSSL) {
-        const sslOptions = {
-            key: fs.readFileSync(keyPath),
-            cert: fs.readFileSync(certPath)
-        };
-        httpsServer = https.createServer(sslOptions, app);
-        server = httpsServer;
-
-        // Create HTTP redirect server â†’ always redirect to HTTPS
-        const redirectApp = express();
-        redirectApp.use((req, res) => {
-            const httpsUrl = `https://${req.hostname}:${SERVER_PORT}${req.url}`;
-            res.redirect(301, httpsUrl);
-        });
-        const httpRedirectServer = http.createServer(redirectApp);
-        const HTTP_REDIRECT_PORT = parseInt(SERVER_PORT) + 1;
-        await killPortProcess(HTTP_REDIRECT_PORT);
-        httpRedirectServer.listen(HTTP_REDIRECT_PORT, '0.0.0.0', () => {
-            console.log(`ðŸ”€ HTTP redirect: http://localhost:${HTTP_REDIRECT_PORT} â†’ https://localhost:${SERVER_PORT}`);
-        }).on('error', () => {
-            // Silently fail if redirect port is busy - HTTPS is primary
-        });
-    } else {
-        server = http.createServer(app);
-    }
-
-    const wss = new WebSocketServer({ server });
-
-    // Initialize Auth Token using a unique salt from environment
-    const authSalt = process.env.AUTH_SALT || 'cursor_default_salt_99';
-    AUTH_TOKEN = hashString(APP_PASSWORD + authSalt);
-
-    app.use(compression());
-    app.use(express.json());
-
-    // Use a secure session secret from .env if available
-    const sessionSecret = process.env.SESSION_SECRET || 'cursor_secret_key_1337';
-    app.use(cookieParser(sessionSecret));
-
-    app.use((req, res, next) => {
-        const requestId = ++requestLogCounter;
-        const startedAt = Date.now();
-        const requestTarget = sanitizeLogUrl(req.originalUrl || req.url);
-        const forwardedFor = req.headers['x-forwarded-for'];
-        const clientIp = typeof forwardedFor === 'string'
-            ? forwardedFor.split(',')[0].trim()
-            : req.socket?.remoteAddress || req.ip || 'unknown';
-
-        console.log(`[REQ ${requestId}] -> ${req.method} ${requestTarget} from ${clientIp}`);
-
-        let responseLogged = false;
-        const logResponse = (eventName) => {
-            if (responseLogged) return;
-            responseLogged = true;
-            const durationMs = Date.now() - startedAt;
-            console.log(`[REQ ${requestId}] <- ${res.statusCode} ${req.method} ${requestTarget} ${durationMs}ms (${eventName})`);
-        };
-
-        res.once('finish', () => logResponse('finish'));
-        res.once('close', () => logResponse(res.writableEnded ? 'close' : 'aborted'));
-        next();
-    });
-
-    // Ngrok Bypass Middleware
-    app.use((req, res, next) => {
-        // Tell ngrok to skip the "visit" warning for API requests
-        res.setHeader('ngrok-skip-browser-warning', 'true');
-        next();
-    });
-
-    // Auth Middleware
-    app.use((req, res, next) => {
-        const publicPaths = ['/login', '/login.html', '/favicon.ico', '/logo.png'];
-        if (publicPaths.includes(req.path) || req.path.startsWith('/css/')) {
-            return next();
-        }
-
-        // Exempt local Wi-Fi devices from authentication
-        if (isLocalRequest(req)) {
-            return next();
-        }
-
-        // Magic Link / QR Code Auto-Login
-        if (req.query.key === APP_PASSWORD) {
-            res.cookie(AUTH_COOKIE_NAME, AUTH_TOKEN, {
-                httpOnly: true,
-                signed: true,
-                maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
-            });
-            // Remove the key from the URL by redirecting to the base path
-            return res.redirect('/');
-        }
-
-        const token = req.signedCookies[AUTH_COOKIE_NAME];
-        if (token === AUTH_TOKEN) {
-            return next();
-        }
-
-        // If it's an API request, return 401, otherwise redirect to login
-        if (req.xhr || req.headers.accept?.includes('json') || req.path.startsWith('/snapshot') || req.path.startsWith('/send')) {
-            res.status(401).json({ error: 'Unauthorized' });
-        } else {
-            res.redirect('/login.html');
-        }
-    });
-
-    app.use(express.static(join(__dirname, 'public')));
-
-    // Login endpoint
-    app.post('/login', (req, res) => {
-        const { password } = req.body;
-        if (password === APP_PASSWORD) {
-            res.cookie(AUTH_COOKIE_NAME, AUTH_TOKEN, {
-                httpOnly: true,
-                signed: true,
-                maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
-            });
-            res.json({ success: true });
-        } else {
-            res.status(401).json({ success: false, error: 'Invalid password' });
-        }
-    });
-
-    // Logout endpoint
-    app.post('/logout', (req, res) => {
-        res.clearCookie(AUTH_COOKIE_NAME);
-        res.json({ success: true });
-    });
-
-    // Get current snapshot
-    app.get('/snapshot', (req, res) => {
-        if (!lastSnapshot) {
-            return res.status(503).json({ error: 'No snapshot available yet' });
-        }
-        res.setHeader('Content-Type', 'application/json; charset=utf-8');
-        res.json(lastSnapshot);
-    });
-
-    // Health check endpoint
-    app.get('/health', (req, res) => {
-        res.json({
-            status: 'ok',
-            cdpConnected: cdpConnection?.ws?.readyState === 1, // WebSocket.OPEN = 1
-            uptime: process.uptime(),
-            timestamp: new Date().toISOString(),
-            https: hasSSL,
-            embedded: IS_EMBEDDED_RUNTIME
-        });
-    });
-
-    // QR Code endpoint - generates QR for phone connection
-    app.get('/qr-info', async (req, res) => {
-        try {
-            const localIP = getLocalIP();
-            const protocol = hasSSL ? 'https' : 'http';
-            const connectUrl = `${protocol}://${localIP}:${SERVER_PORT}?key=${encodeURIComponent(APP_PASSWORD)}`;
-
-            const qrDataUrl = await QRCode.toDataURL(connectUrl, {
-                width: 280,
-                margin: 2,
-                color: {
-                    dark: '#e0e0e4',
-                    light: '#111215'
-                }
-            });
-
-            res.json({
-                qrDataUrl,
-                connectUrl,
-                localIP,
-                port: SERVER_PORT,
-                protocol
-            });
-        } catch (e) {
-            res.status(500).json({ error: e.message });
-        }
-    });
-
-    // SSL status endpoint
-    app.get('/ssl-status', (req, res) => {
-        res.json({
-            enabled: hasSSL,
-            certsExist: certsExist,
-            embedded: IS_EMBEDDED_RUNTIME,
-            message: hasSSL ? 'HTTPS is active' :
-                certsExist && IS_EMBEDDED_RUNTIME ? 'Embedded runtime uses local HTTP. Browser mode can still use HTTPS.' :
-                    certsExist ? 'Certificates exist, restart server to enable HTTPS' :
-                        'No certificates found'
-        });
-    });
-
-    // Generate SSL certificates endpoint
-    app.post('/generate-ssl', async (req, res) => {
-        try {
-            const { execSync } = await import('child_process');
-            execSync('node generate_ssl.js', {
-                cwd: __dirname,
-                stdio: 'pipe',
-                env: {
-                    ...process.env,
-                    CR_RUNTIME_DIR: RUNTIME_ROOT
-                }
-            });
-            res.json({
-                success: true,
-                message: 'SSL certificates generated! Restart the server to enable HTTPS.'
-            });
-        } catch (e) {
-            res.status(500).json({
-                success: false,
-                error: e.message
-            });
-        }
-    });
-
-    // Debug UI Endpoint
-    app.get('/debug-ui', async (req, res) => {
-        if (!cdpConnection) return res.status(503).json({ error: 'CDP not connected' });
-        const uiTree = await inspectUI(cdpConnection);
-        console.log('--- UI TREE ---');
-        console.log(uiTree);
-        console.log('---------------');
-        res.type('json').send(uiTree);
-    });
-
-    // Set Mode
-    app.post('/set-mode', async (req, res) => {
-        const { mode } = req.body;
-        if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
-        const result = await setMode(cdpConnection, mode);
-        res.json(result);
-    });
-
-    // Set Model
-    app.post('/set-model', async (req, res) => {
-        const { model } = req.body;
-        if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
-        const result = await setModel(cdpConnection, model);
-        res.json(result);
-    });
-
-    app.post('/set-model-toggle', async (req, res) => {
-        const { key, enabled } = req.body || {};
-        if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
-        const result = await setModelToggle(cdpConnection, key, enabled);
-        res.json(result);
-    });
-
-    // Stop Generation
-    app.post('/stop', async (req, res) => {
-        if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
-        const result = await stopGeneration(cdpConnection);
-        res.json(result);
-    });
-
-    // Send message
-    app.post('/send', async (req, res) => {
-        const { message } = req.body;
-
-        if (!message) {
-            return res.status(400).json({ error: 'Message required' });
-        }
-
-        if (!cdpConnection) {
-            return res.status(503).json({ error: 'CDP not connected' });
-        }
-
-        const result = await injectMessage(cdpConnection, message);
-
-        // Always return 200 - the message usually goes through even if CDP reports issues
-        // The client will refresh and see if the message appeared
-        res.json({
-            success: result.ok !== false,
-            method: result.method || 'attempted',
-            details: result
-        });
-    });
-
-    // --- File Upload ---
-    const uploadsDir = join(RUNTIME_ROOT, 'uploads');
-    if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-
-    const upload = multer({
-        storage: multer.diskStorage({
-            destination: uploadsDir,
-            filename: (req, file, cb) => {
-                // Keep original name but prevent overwrite with timestamp prefix
-                const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
-                cb(null, `${Date.now()}-${safeName}`);
-            }
-        }),
-        limits: { fileSize: 50 * 1024 * 1024 } // 50MB max
-    });
-
-    app.post('/upload', upload.single('file'), async (req, res) => {
-        if (!req.file) {
-            return res.status(400).json({ error: 'No file provided' });
-        }
-
-        if (!cdpConnection) {
-            return res.status(503).json({ error: 'CDP not connected' });
-        }
-
-        const filePath = req.file.path.replace(/\\/g, '/'); // Normalize path for Windows
-        console.log(`ðŸ“Ž File uploaded: ${req.file.originalname} (${req.file.size} bytes) â†’ ${filePath}`);
-
-        try {
-            const result = await injectFile(cdpConnection, filePath);
-            res.json({
-                success: result.success !== false,
-                file: req.file.originalname,
-                size: req.file.size,
-                details: result
-            });
-        } catch (e) {
-            console.error('File inject error:', e);
-            res.json({
-                success: false,
-                file: req.file.originalname,
-                error: e.message
-            });
-        }
-    });
-
-    // UI Inspection endpoint - Returns all buttons as JSON for debugging
-    app.get('/ui-inspect', async (req, res) => {
-        if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
-
-        const EXP = `(() => {
-    try {
-        // Safeguard for non-DOM contexts
-        if (typeof window === 'undefined' || typeof document === 'undefined') {
-            return { error: 'Non-DOM context' };
-        }
-
-        // Helper to get string class name safely (handles SVGAnimatedString)
-        function getCls(el) {
-            if (!el) return '';
-            if (typeof el.className === 'string') return el.className;
-            if (el.className && typeof el.className.baseVal === 'string') return el.className.baseVal;
-            return '';
-        }
-
-        // Helper to pierce Shadow DOM
-        function findAllElements(selector, root = document) {
-            let results = Array.from(root.querySelectorAll(selector));
-            const elements = root.querySelectorAll('*');
-            for (const el of elements) {
-                try {
-                    if (el.shadowRoot) {
-                        results = results.concat(Array.from(el.shadowRoot.querySelectorAll(selector)));
-                    }
-                } catch (e) { }
-            }
-            return results;
-        }
-
-        // Get standard info
-        const url = window.location ? window.location.href : '';
-        const title = document.title || '';
-        const bodyLen = document.body ? document.body.innerHTML.length : 0;
-        const hasCascade = !!document.getElementById('cascade') || !!document.querySelector('.cascade');
-
-        // Scan for buttons
-        const allLucideElements = findAllElements('svg[class*="lucide"]').map(svg => {
-            const parent = svg.closest('button, [role="button"], div, span, a');
-            if (!parent || parent.offsetParent === null) return null;
-            const rect = parent.getBoundingClientRect();
-            return {
-                type: 'lucide-icon',
-                tag: parent.tagName.toLowerCase(),
-                x: Math.round(rect.left),
-                y: Math.round(rect.top),
-                svgClasses: getCls(svg),
-                className: getCls(parent).substring(0, 100),
-                ariaLabel: parent.getAttribute('aria-label') || '',
-                title: parent.getAttribute('title') || '',
-                parentText: (parent.innerText || '').trim().substring(0, 50)
-            };
-        }).filter(Boolean);
-
-        const buttons = findAllElements('button, [role="button"]').map((btn, i) => {
-            const rect = btn.getBoundingClientRect();
-            const svg = btn.querySelector('svg');
-
-            return {
-                type: 'button',
-                index: i,
-                x: Math.round(rect.left),
-                y: Math.round(rect.top),
-                text: (btn.innerText || '').trim().substring(0, 50) || '(empty)',
-                ariaLabel: btn.getAttribute('aria-label') || '',
-                title: btn.getAttribute('title') || '',
-                svgClasses: getCls(svg),
-                className: getCls(btn).substring(0, 100),
-                visible: btn.offsetParent !== null
-            };
-        }).filter(b => b.visible);
-
-        return {
-            url, title, bodyLen, hasCascade,
-            buttons, lucideIcons: allLucideElements
-        };
-    } catch (err) {
-        return { error: err.toString(), stack: err.stack };
-    }
-})()`;
-
-        try {
-            // 1. Get Frames
-            const { frameTree } = await cdpConnection.call("Page.getFrameTree");
-            function flattenFrames(node) {
-                let list = [{
-                    id: node.frame.id,
-                    url: node.frame.url,
-                    name: node.frame.name,
-                    parentId: node.frame.parentId
-                }];
-                if (node.childFrames) {
-                    for (const child of node.childFrames) list = list.concat(flattenFrames(child));
-                }
-                return list;
-            }
-            const allFrames = flattenFrames(frameTree);
-
-            // 2. Map Contexts
-            const contexts = cdpConnection.contexts.map(c => ({
-                id: c.id,
-                name: c.name,
-                origin: c.origin,
-                frameId: c.auxData ? c.auxData.frameId : null,
-                isDefault: c.auxData ? c.auxData.isDefault : false
-            }));
-
-            // 3. Scan ALL Contexts
-            const contextResults = [];
-            for (const ctx of contexts) {
-                try {
-                    const result = await cdpConnection.call("Runtime.evaluate", {
-                        expression: EXP,
-                        returnByValue: true,
-                        contextId: ctx.id
-                    });
-
-                    if (result.result?.value) {
-                        const val = result.result.value;
-                        contextResults.push({
-                            contextId: ctx.id,
-                            frameId: ctx.frameId,
-                            url: val.url,
-                            title: val.title,
-                            hasCascade: val.hasCascade,
-                            buttonCount: val.buttons.length,
-                            lucideCount: val.lucideIcons.length,
-                            buttons: val.buttons, // Store buttons for analysis
-                            lucideIcons: val.lucideIcons
-                        });
-                    } else if (result.exceptionDetails) {
-                        contextResults.push({
-                            contextId: ctx.id,
-                            frameId: ctx.frameId,
-                            error: `Script Exception: ${result.exceptionDetails.text} ${result.exceptionDetails.exception?.description || ''} `
-                        });
-                    } else {
-                        contextResults.push({
-                            contextId: ctx.id,
-                            frameId: ctx.frameId,
-                            error: 'No value returned (undefined)'
-                        });
-                    }
-                } catch (e) {
-                    contextResults.push({ contextId: ctx.id, error: e.message });
-                }
-            }
-
-            // 4. Match and Analyze
-            const cascadeFrame = allFrames.find(f => f.url.includes('cascade'));
-            const matchingContext = contextResults.find(c => c.frameId === cascadeFrame?.id);
-            const contentContext = contextResults.sort((a, b) => (b.buttonCount || 0) - (a.buttonCount || 0))[0];
-
-            // Prepare "useful buttons" from the best context
-            const bestContext = matchingContext || contentContext;
-            const usefulButtons = bestContext ? (bestContext.buttons || []).filter(b =>
-                b.ariaLabel?.includes('New Conversation') ||
-                b.title?.includes('New Conversation') ||
-                b.ariaLabel?.includes('Past Conversations') ||
-                b.title?.includes('Past Conversations') ||
-                b.ariaLabel?.includes('History')
-            ) : [];
-
-            res.json({
-                summary: {
-                    frameFound: !!cascadeFrame,
-                    cascadeFrameId: cascadeFrame?.id,
-                    contextFound: !!matchingContext,
-                    bestContextId: bestContext?.contextId
-                },
-                frames: allFrames,
-                contexts: contexts,
-                scanResults: contextResults.map(c => ({
-                    id: c.contextId,
-                    frameId: c.frameId,
-                    url: c.url,
-                    hasCascade: c.hasCascade,
-                    buttons: c.buttonCount,
-                    error: c.error
-                })),
-                usefulButtons: usefulButtons,
-                bestContextData: bestContext // Full data for the best context
-            });
-
-        } catch (e) {
-            res.status(500).json({ error: e.message, stack: e.stack });
-        }
-    });
-
-    // Endpoint to list all CDP targets - helpful for debugging connection issues
-    app.get('/cdp-targets', async (req, res) => {
-        const results = {};
-        for (const port of PORTS) {
-            try {
-                const list = await getJson(`http://127.0.0.1:${port}/json/list`);
-                results[port] = list;
-            } catch (e) {
-                results[port] = e.message;
-            }
-        }
-        res.json(results);
-    });
-
-    // WebSocket connection with Auth check
-    wss.on('connection', (ws, req) => {
-        // Parse cookies from headers
-        const rawCookies = req.headers.cookie || '';
-        const parsedCookies = {};
-        rawCookies.split(';').forEach(c => {
-            const [k, v] = c.trim().split('=');
-            if (k && v) {
-                try {
-                    parsedCookies[k] = decodeURIComponent(v);
-                } catch (e) {
-                    parsedCookies[k] = v;
-                }
-            }
-        });
-
-        // Verify signed cookie manually
-        const signedToken = parsedCookies[AUTH_COOKIE_NAME];
-        let isAuthenticated = false;
-
-        // Exempt local Wi-Fi devices from authentication
-        if (isLocalRequest(req)) {
-            isAuthenticated = true;
-        } else if (signedToken) {
-            const sessionSecret = process.env.SESSION_SECRET || 'cursor_secret_key_1337';
-            const token = cookieParser.signedCookie(signedToken, sessionSecret);
-            if (token === AUTH_TOKEN) {
-                isAuthenticated = true;
-            }
-        }
-
-        if (!isAuthenticated) {
-            console.log('ðŸš« Unauthorized WebSocket connection attempt');
-            ws.send(JSON.stringify({ type: 'error', message: 'Unauthorized' }));
-            setTimeout(() => ws.close(), 100);
-            return;
-        }
-
-        console.log('ðŸ“± Client connected (Authenticated)');
-
-        ws.on('close', () => {
-            console.log('ðŸ“± Client disconnected');
-        });
-    });
-
-    return { server, wss, app, hasSSL };
-}
 
 // Main
 async function main() {
@@ -3236,84 +2891,48 @@ async function main() {
         }
 
         if (!cdpConnection) {
-            console.warn(`âš ï¸  Initial CDP discovery failed: ${err.message}`);
-            console.log('ðŸ’¡ Start Cursor with --remote-debugging-port=9000 to connect.');
+            console.warn(`Ã¢Å¡Â Ã¯Â¸Â  Initial CDP discovery failed: ${err.message}`);
+            console.log('Ã°Å¸â€™Â¡ Start Cursor with --remote-debugging-port=9000 to connect.');
         }
 
     }
 
     try {
-        const { server, wss, app, hasSSL } = await createServer();
+        const { server, wss, hasSSL } = await createServer({
+            APP_PASSWORD,
+            AUTH_COOKIE_NAME,
+            IS_EMBEDDED_RUNTIME,
+            PORTS,
+            RUNTIME_ROOT,
+            SERVER_PORT,
+            __dirname,
+            clickElement,
+            closeHistory,
+            ensureHttpsCertificates,
+            getAppState,
+            getCdpConnection: () => cdpConnection,
+            getChatHistory,
+            getDropdownOptions,
+            getJson,
+            getLocalIP,
+            getSnapshot: () => lastSnapshot,
+            hasChatOpen,
+            hashString,
+            injectFile,
+            injectMessage,
+            isLocalRequest,
+            killPortProcess,
+            remoteScroll,
+            sanitizeLogUrl,
+            selectChat,
+            setMode,
+            setModel,
+            setModelToggle,
+            startNewChat,
+            stopGeneration
+        });
 
-        // Start background polling (it will now handle reconnections)
         startPolling(wss);
-
-        // Remote Click
-        app.post('/remote-click', async (req, res) => {
-            const { selector, index, textContent } = req.body;
-            if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
-            const result = await clickElement(cdpConnection, { selector, index, textContent });
-            res.json(result);
-        });
-
-        // Remote Scroll - sync phone scroll to desktop
-        app.post('/remote-scroll', async (req, res) => {
-            const { scrollTop, scrollPercent } = req.body;
-            if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
-            const result = await remoteScroll(cdpConnection, { scrollTop, scrollPercent });
-            res.json(result);
-        });
-
-        // Get App State
-        app.get('/app-state', async (req, res) => {
-            if (!cdpConnection) return res.json({ mode: 'Unknown', model: 'Unknown', isRunning: false, hasChat: false, hasMessages: false, editorFound: false });
-            const result = await getAppState(cdpConnection);
-            res.json(result);
-        });
-
-        app.get('/dropdown-options', async (req, res) => {
-            const kind = req.query.kind === 'model' ? 'model' : 'mode';
-            if (!cdpConnection) return res.json({ error: 'CDP disconnected', kind, options: [] });
-            const result = await getDropdownOptions(cdpConnection, kind);
-            res.json(result);
-        });
-
-        // Start New Chat
-        app.post('/new-chat', async (req, res) => {
-            if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
-            const result = await startNewChat(cdpConnection);
-            res.json(result);
-        });
-
-        // Get Chat History
-        app.get('/chat-history', async (req, res) => {
-            if (!cdpConnection) return res.json({ error: 'CDP disconnected', chats: [] });
-            const result = await getChatHistory(cdpConnection);
-            res.json(result);
-        });
-
-        // Select a Chat
-        app.post('/select-chat', async (req, res) => {
-            const { title } = req.body;
-            if (!title) return res.status(400).json({ error: 'Chat title required' });
-            if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
-            const result = await selectChat(cdpConnection, title);
-            res.json(result);
-        });
-
-        // Close Chat History
-        app.post('/close-history', async (req, res) => {
-            if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
-            const result = await closeHistory(cdpConnection);
-            res.json(result);
-        });
-
-        // Check if Chat is Open
-        app.get('/chat-status', async (req, res) => {
-            if (!cdpConnection) return res.json({ hasChat: false, hasMessages: false, editorFound: false });
-            const result = await hasChatOpen(cdpConnection);
-            res.json(result);
-        });
 
         // Kill any existing process on the port before starting
         await killPortProcess(SERVER_PORT);
@@ -3326,9 +2945,9 @@ async function main() {
 
         const startListening = () => {
             server.listen(SERVER_PORT, '0.0.0.0', () => {
-                console.log(`ðŸš€ Server running on ${protocol}://${localIP}:${SERVER_PORT}`);
+                console.log(`Ã°Å¸Å¡â‚¬ Server running on ${protocol}://${localIP}:${SERVER_PORT}`);
                 if (hasSSL) {
-                    console.log(`ðŸ’¡ First time on phone? Accept the security warning to proceed.`);
+                    console.log(`Ã°Å¸â€™Â¡ First time on phone? Accept the security warning to proceed.`);
                 }
             });
         };
@@ -3336,14 +2955,14 @@ async function main() {
         server.on('error', async (err) => {
             if (err.code === 'EADDRINUSE' && listenRetries < MAX_LISTEN_RETRIES) {
                 listenRetries++;
-                console.warn(`âš ï¸  Port ${SERVER_PORT} busy, retry ${listenRetries}/${MAX_LISTEN_RETRIES}...`);
+                console.warn(`Ã¢Å¡Â Ã¯Â¸Â  Port ${SERVER_PORT} busy, retry ${listenRetries}/${MAX_LISTEN_RETRIES}...`);
                 await killPortProcess(SERVER_PORT);
                 setTimeout(startListening, 1000);
             } else if (err.code === 'EADDRINUSE') {
-                console.error(`âŒ Port ${SERVER_PORT} still in use after ${MAX_LISTEN_RETRIES} retries. Exiting.`);
+                console.error(`Ã¢ÂÅ’ Port ${SERVER_PORT} still in use after ${MAX_LISTEN_RETRIES} retries. Exiting.`);
                 process.exit(1);
             } else {
-                console.error('âŒ Server error:', err.message);
+                console.error('Ã¢ÂÅ’ Server error:', err.message);
             }
         });
 
@@ -3351,7 +2970,7 @@ async function main() {
 
         // Graceful shutdown handlers
         const gracefulShutdown = (signal) => {
-            console.log(`\nðŸ›‘ Received ${signal}. Shutting down gracefully...`);
+            console.log(`\nÃ°Å¸â€ºâ€˜ Received ${signal}. Shutting down gracefully...`);
             wss.close(() => {
                 console.log('   WebSocket server closed');
             });
@@ -3369,7 +2988,7 @@ async function main() {
         process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 
     } catch (err) {
-        console.error('âŒ Fatal error:', err.message);
+        console.error('Ã¢ÂÅ’ Fatal error:', err.message);
         process.exit(1);
     }
 }
