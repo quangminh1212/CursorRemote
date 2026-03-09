@@ -1,16 +1,23 @@
 #!/usr/bin/env node
 /**
  * Smoke test: verify server responds on /health and serves static.
- * Run: node smoke-test.js   (server must be running on PORT, default 3000)
+ * Run: node smoke-test.js
+ * Optional:
+ *   - BASE_URL=https://127.0.0.1:3002
+ *   - PORT=3000 HTTPS=1
  */
 import http from 'http';
+import https from 'https';
 
 const PORT = Number(process.env.PORT || 3000);
-const BASE = `http://127.0.0.1:${PORT}`;
+const BASE = process.env.BASE_URL || `${process.env.HTTPS === '1' ? 'https' : 'http'}://127.0.0.1:${PORT}`;
+const BASE_URL = new URL(BASE);
 
 function get(path) {
     return new Promise((resolve, reject) => {
-        const req = http.get(BASE + path, { timeout: 5000 }, (res) => {
+        const target = new URL(path, BASE_URL);
+        const transport = target.protocol === 'https:' ? https : http;
+        const req = transport.get(target, { timeout: 5000, rejectUnauthorized: false }, (res) => {
             let body = '';
             res.on('data', (c) => (body += c));
             res.on('end', () => resolve({ status: res.statusCode, body }));

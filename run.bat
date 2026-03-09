@@ -8,6 +8,8 @@ set "CR_RUNTIME_DIR=%CD%"
 
 set "RUN_LOG=%CD%\log.txt"
 set "RUN_LOG_OLD=%CD%\log.old.txt"
+set "CURSOR_STDOUT_LOG=%CD%\cursor-launch.stdout.log"
+set "CURSOR_STDERR_LOG=%CD%\cursor-launch.stderr.log"
 call :reset_runtime_logs
 set "CAN_PAUSE=1"
 set "CAN_CLEAR_SCREEN=1"
@@ -34,6 +36,8 @@ if /i "%~1"=="--server-only" set "MODE=server"
 if /i "%~1"=="-s" set "MODE=server"
 if /i "%~1"=="--desktop" set "MODE=desktop"
 if /i "%~1"=="--dev" set "SERVER_MODE=dev"
+if /i "%~1"=="--hot" set "SERVER_MODE=dev"
+if /i "%~1"=="--watch" set "SERVER_MODE=dev"
 if /i "%~1"=="--no-open" set "OPEN_BROWSER=0"
 if /i "%~1"=="--no-verify" set "VERIFY_STARTUP=0"
 if /i "%~1"=="--port" (
@@ -132,6 +136,7 @@ echo [4/7] Detecting target Cursor workspace...
 set "LAST_REPO="
 set "TARGET_REPO=%CD%"
 set "CURSOR_STORAGE_JSON=%APPDATA%\Cursor\User\globalStorage\storage.json"
+call :ensure_json_utf8_no_bom "!CURSOR_STORAGE_JSON!"
 
 if exist "!CURSOR_STORAGE_JSON!" (
     for /f "usebackq delims=" %%i in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$storage = $env:APPDATA + '\Cursor\User\globalStorage\storage.json'; try { $json = Get-Content -Raw -LiteralPath $storage | ConvertFrom-Json; $uri = $json.windowsState.lastActiveWindow.folder; if (-not $uri -and $json.backupWorkspaces.folders -and $json.backupWorkspaces.folders.Count -gt 0) { $uri = $json.backupWorkspaces.folders[0].folderUri }; if ($uri) { $path = [System.Uri]::new($uri).LocalPath; if ($path -match '^/[A-Za-z]:') { $path = $path.Substring(1) }; $path = $path -replace '/', '\'; $path } } catch { }"`) do (
@@ -202,29 +207,26 @@ if !CDP_FOUND!==0 (
 
         set "ARGV_DIR=%APPDATA%\Cursor"
         set "ARGV_FILE=!ARGV_DIR!\argv.json"
-        if not exist "!ARGV_DIR!" mkdir "!ARGV_DIR!" >nul 2>nul
-        > "!ARGV_FILE!" echo {"remote-debugging-port": !CDP_PORT!}
-        echo       Injected remote-debugging-port=!CDP_PORT! into argv.json
-        call :log "Updated Cursor argv.json with remote-debugging-port=!CDP_PORT!"
+        call :write_cursor_argv
+        if errorlevel 1 (
+            echo       [WARN] Could not update Cursor argv.json automatically.
+            call :log "Failed to update Cursor argv.json"
+        ) else (
+            echo       Prepared Cursor argv.json with remote-debugging-port=!CDP_PORT!
+            call :log "Prepared Cursor argv.json with remote-debugging-port=!CDP_PORT!"
+        )
 
         taskkill /f /im Cursor.exe >nul 2>&1
-        timeout /t 2 /nobreak >nul
+        timeout /t 2 /nobreak >nul 2>&1
 
         echo       Launching Cursor visibly on workspace: !TARGET_REPO!
-        start "" "!CURSOR_EXE!" "!TARGET_REPO!" --remote-debugging-port=!CDP_PORT!
-        ping -n 4 127.0.0.1 >nul
-
-        tasklist /FI "IMAGENAME eq Cursor.exe" /NH 2>nul | findstr /i "Cursor.exe" >nul 2>nul
-        if !errorlevel! neq 0 (
-            echo       [INFO] CLI flag not accepted, retrying visibly with argv.json only...
-            start "" "!CURSOR_EXE!" "!TARGET_REPO!"
-        )
+        call :launch_cursor_visible_silent
 
         echo       Waiting for Cursor CDP to become ready...
         set "CDP_READY=0"
         for /l %%i in (1,1,20) do (
             if !CDP_READY!==0 (
-                timeout /t 2 /nobreak >nul
+                timeout /t 2 /nobreak >nul 2>&1
                 curl -s http://127.0.0.1:!CDP_PORT!/json/version 2>nul | findstr /i "Cursor" >nul 2>nul
                 if !errorlevel!==0 (
                     echo       CDP ready on port !CDP_PORT! ^(verified: Cursor^)
@@ -324,10 +326,8 @@ if not "!TAURI_EXIT!"=="0" (
 exit /b !TAURI_EXIT!
 
 :server_mode
-set "RESET_SERVER_LOG=0"
 if /i "!SERVER_MODE!"=="dev" (
-    set "RESET_SERVER_LOG=1"
-    set "SERVER_COMMAND=powershell -NoProfile -ExecutionPolicy Bypass -File ""%CD%\watch-server.ps1"""
+    set "SERVER_COMMAND=call npm run dev"
 ) else (
     set "SERVER_COMMAND=node server.js"
 )
@@ -345,7 +345,11 @@ echo.
 
 call :log "Starting browser mode with command: !SERVER_COMMAND!"
 echo       Starting background server...
-start /b "" cmd /c "cd /d ""%CD%"" && set PORT=!PORT! && set CR_SKIP_AUTO_LAUNCH=1 && set CR_TERMINAL_LOG=!CR_TERMINAL_LOG! && set CR_RESET_LOG_ON_START=!RESET_SERVER_LOG! && !SERVER_COMMAND!"
+if /i "!SERVER_MODE!"=="dev" (
+    echo       Hot reload: enabled ^(watching server.js and public/* via nodemon^).
+    call :log "Hot reload enabled via npm run dev"
+)
+start /b "" cmd /c "cd /d ""%CD%"" && set PORT=!PORT! && set CR_SKIP_AUTO_LAUNCH=1 && set CR_TERMINAL_LOG=!CR_TERMINAL_LOG! && set CR_RESET_LOG_ON_START=0 && !SERVER_COMMAND! >nul 2>&1"
 
 if "!VERIFY_STARTUP!"=="1" (
     call :verify_server_startup
@@ -401,7 +405,7 @@ for /l %%i in (1,1,45) do (
         )
     )
 
-    >nul timeout /t 2 /nobreak
+    timeout /t 2 /nobreak >nul 2>&1
 )
 
 if /i "!VERIFY_STATE!"=="connected" (
@@ -492,7 +496,7 @@ exit /b 1
 :stop_workspace_servers
 echo       Stopping existing Cursor Remote server processes for this workspace...
 set "FOUND_WORKSPACE_PROCESS=0"
-for /f "usebackq delims=" %%p in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$workspace = [regex]::Escape((Get-Location).Path); Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and ((($_.CommandLine -match $workspace) -and ($_.CommandLine -match 'server\.js' -or $_.CommandLine -match 'nodemon')) -or $_.CommandLine -match 'watch-server\.ps1') } | Select-Object -ExpandProperty ProcessId -Unique"`) do (
+for /f "usebackq delims=" %%p in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$workspace = [regex]::Escape((Get-Location).Path); $managedPorts = 3000..3005; $portPids = @(); try { $portPids = Get-NetTCPConnection -State Listen -ErrorAction Stop | Where-Object { $managedPorts -contains $_.LocalPort } | Select-Object -ExpandProperty OwningProcess -Unique } catch { $portPids = @() }; Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and ( ((($_.CommandLine -match $workspace) -and ($_.CommandLine -match 'server\.js' -or $_.CommandLine -match 'nodemon' -or $_.CommandLine -match 'tauri-server\.mjs')) -or ($_.CommandLine -match 'watch-server\.ps1')) -or (($portPids -contains $_.ProcessId) -and ($_.CommandLine -match 'server\.js' -or $_.CommandLine -match 'nodemon' -or $_.CommandLine -match 'tauri-server\.mjs')) ) } | Select-Object -ExpandProperty ProcessId -Unique"`) do (
     if not "%%p"=="" (
         set "FOUND_WORKSPACE_PROCESS=1"
         echo         - PID %%p
@@ -502,6 +506,52 @@ for /f "usebackq delims=" %%p in (`powershell -NoProfile -ExecutionPolicy Bypass
 )
 if "!FOUND_WORKSPACE_PROCESS!"=="0" echo         No existing workspace server process found.
 exit /b 0
+
+:ensure_json_utf8_no_bom
+set "JSON_UTF8_FILE=%~1"
+if not defined JSON_UTF8_FILE exit /b 0
+if not exist "!JSON_UTF8_FILE!" exit /b 0
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$path = $env:JSON_UTF8_FILE; " ^
+  "$bytes = [System.IO.File]::ReadAllBytes($path); " ^
+  "if ($bytes.Length -ge 3 -and $bytes[0] -eq 239 -and $bytes[1] -eq 187 -and $bytes[2] -eq 191) { " ^
+  "  $text = [System.Text.Encoding]::UTF8.GetString($bytes, 3, $bytes.Length - 3); " ^
+  "  $encoding = New-Object System.Text.UTF8Encoding($false); " ^
+  "  [System.IO.File]::WriteAllText($path, $text, $encoding) " ^
+  "}" >nul 2>&1
+exit /b 0
+
+:write_cursor_argv
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$ErrorActionPreference = 'Stop'; " ^
+  "$path = $env:ARGV_FILE; " ^
+  "$dir = Split-Path -Parent $path; " ^
+  "if (-not (Test-Path -LiteralPath $dir)) { [System.IO.Directory]::CreateDirectory($dir) | Out-Null }; " ^
+  "$data = @{}; " ^
+  "if (Test-Path -LiteralPath $path) { " ^
+  "  try { " ^
+  "    $existing = Get-Content -Raw -LiteralPath $path | ConvertFrom-Json; " ^
+  "    if ($existing) { foreach ($prop in $existing.PSObject.Properties) { $data[$prop.Name] = $prop.Value } } " ^
+  "  } catch { $data = @{} } " ^
+  "}; " ^
+  "$data['remote-debugging-port'] = [int]$env:CDP_PORT; " ^
+  "$json = $data | ConvertTo-Json -Depth 10; " ^
+  "$encoding = New-Object System.Text.UTF8Encoding($false); " ^
+  "[System.IO.File]::WriteAllText($path, $json, $encoding)" >nul 2>&1
+exit /b !errorlevel!
+
+:launch_cursor_visible_silent
+if exist "%CURSOR_STDOUT_LOG%" del /f /q "%CURSOR_STDOUT_LOG%" >nul 2>&1
+if exist "%CURSOR_STDERR_LOG%" del /f /q "%CURSOR_STDERR_LOG%" >nul 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$ErrorActionPreference = 'Stop'; " ^
+  "$exe = $env:CURSOR_EXE; " ^
+  "$workspace = $env:TARGET_REPO; " ^
+  "$port = [string]$env:CDP_PORT; " ^
+  "$stdout = $env:CURSOR_STDOUT_LOG; " ^
+  "$stderr = $env:CURSOR_STDERR_LOG; " ^
+  "Start-Process -FilePath $exe -ArgumentList @($workspace, ('--remote-debugging-port=' + $port)) -WorkingDirectory $workspace -WindowStyle Normal -RedirectStandardOutput $stdout -RedirectStandardError $stderr | Out-Null" >nul 2>&1
+exit /b !errorlevel!
 
 :resolve_cursor_exe
 set "CURSOR_EXE="
@@ -549,6 +599,8 @@ exit /b 0
 :reset_runtime_logs
 if exist "%RUN_LOG%" del /f /q "%RUN_LOG%" >nul 2>&1
 if exist "%RUN_LOG_OLD%" del /f /q "%RUN_LOG_OLD%" >nul 2>&1
+if exist "%CURSOR_STDOUT_LOG%" del /f /q "%CURSOR_STDOUT_LOG%" >nul 2>&1
+if exist "%CURSOR_STDERR_LOG%" del /f /q "%CURSOR_STDERR_LOG%" >nul 2>&1
 exit /b 0
 
 :pause_if_interactive
