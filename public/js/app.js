@@ -71,6 +71,8 @@ const sidebarTransportText = document.getElementById('sidebarTransportText');
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
 const isLoopbackHost = LOOPBACK_HOSTS.has(window.location.hostname);
+const DEFAULT_COMPOSER_PLACEHOLDER = 'Ask anything, @ to mention, / for workflows';
+const HOME_COMPOSER_PLACEHOLDER = 'Add a follow-up';
 
 function setTextContent(element, value) {
     if (element) element.textContent = value;
@@ -82,11 +84,82 @@ function getTransportLabel() {
     return 'HTTP + WS';
 }
 
+function syncShellPromptFromComposer(value = messageInput.value) {
+    const shellInput = document.getElementById('shellPromptInput');
+    if (!shellInput) return;
+    shellInput.value = value;
+}
+
+function updateCursorShellStatus({ connected, running, snapshotReady }) {
+    const statusLabel = document.getElementById('shellStatusText');
+    const statusAction = document.getElementById('shellStatusAction');
+    if (!statusLabel || !statusAction) return;
+
+    let label = 'Waiting for extension host';
+    let action = 'Cancel';
+
+    if (running) {
+        label = 'Agent is running';
+        action = 'Stop';
+    } else if (connected && snapshotReady) {
+        label = 'Desktop connected';
+    } else if (connected) {
+        label = 'Waiting for extension host';
+    }
+
+    statusLabel.textContent = label;
+    statusAction.textContent = action;
+}
+
+function renderHomeShell() {
+    chatContent.innerHTML = `
+        <div class="cursor-shell-empty">
+            <div class="cursor-shell-search">
+                <input
+                    id="shellPromptInput"
+                    class="cursor-shell-search-input"
+                    type="text"
+                    spellcheck="false"
+                    autocomplete="off"
+                    aria-label="Cursor shell prompt"
+                    value="${escapeHtml(messageInput.value || 'c')}"
+                >
+            </div>
+            <div class="cursor-shell-status-line">
+                <span class="cursor-shell-status-text" id="shellStatusText">Waiting for extension host</span>
+                <button type="button" class="cursor-shell-status-action" id="shellStatusAction">Cancel</button>
+            </div>
+            <div class="cursor-shell-spacer" aria-hidden="true"></div>
+        </div>
+    `;
+
+    const shellInput = document.getElementById('shellPromptInput');
+    if (shellInput) {
+        shellInput.addEventListener('input', () => {
+            messageInput.value = shellInput.value;
+            messageInput.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+    }
+
+    const statusAction = document.getElementById('shellStatusAction');
+    if (statusAction) {
+        statusAction.addEventListener('click', () => {
+            if (document.body.classList.contains('agent-running')) {
+                stopBtn.click();
+            } else {
+                messageInput.value = '';
+                messageInput.dispatchEvent(new Event('input', { bubbles: true }));
+                if (shellInput) shellInput.value = '';
+            }
+        });
+    }
+}
+
 function updateWorkspaceChrome(overrides = {}) {
     const connected = overrides.connected ?? !!(ws && ws.readyState === WebSocket.OPEN);
     const running = overrides.running ?? document.body.classList.contains('agent-running');
     const snapshotReady = overrides.snapshotReady ?? hasSnapshotLoaded;
-    const mode = overrides.mode ?? modeText.textContent;
+    const mode = getModeDisplayLabel(overrides.mode ?? modeText.textContent);
     const model = overrides.model ?? modelText.textContent;
 
     let title = 'Connecting...';
@@ -124,6 +197,11 @@ function updateWorkspaceChrome(overrides = {}) {
     setTextContent(heroModelDetail, running ? 'Generation in progress.' : `${transport} transport active.`);
     setTextContent(sidebarTransportText, running ? `${transport} / running` : transport);
     setTextContent(sidebarProtocolChip, protocolChip);
+
+    if (document.body.classList.contains('home-screen')) {
+        setTextContent(heroStatusTitle, 'New Chat');
+        updateCursorShellStatus({ connected, running, snapshotReady });
+    }
 }
 
 // --- Fullscreen Toggle ---
@@ -131,6 +209,12 @@ if (!document.fullscreenEnabled || typeof document.documentElement.requestFullsc
     fullscreenBtn.style.display = 'none';
 } else {
     fullscreenBtn.addEventListener('click', () => {
+        if (document.body.classList.contains('home-screen')) {
+            messageInput.value = '';
+            messageInput.dispatchEvent(new Event('input', { bubbles: true }));
+            return;
+        }
+
         if (!document.fullscreenElement) {
             document.documentElement.requestFullscreen().catch(() => { });
         } else {
@@ -181,8 +265,8 @@ let lastScrollPosition = 0;
 let ws = null;
 let idleTimer = null;
 let lastHash = '';
-let currentMode = 'Unknown';
-let currentModel = 'Unknown';
+let currentMode = modeText.textContent || 'Agent';
+let currentModel = modelText.textContent || 'Auto';
 let chatIsOpen = true; // Track if a chat is currently open
 let cachedCssKey = ''; // Cache CSS signature to avoid unnecessary re-injection
 let lastRenderedHash = ''; // Track last rendered HTML hash to skip identical updates
@@ -193,9 +277,6 @@ let hasSnapshotLoaded = false;
 let availableModes = [];
 let availableModels = [];
 let lastModelDropdownState = null;
-
-// Init theme from localStorage or default to dark
-applyTheme(localStorage.getItem('crTheme') || 'dark');
 
 // Fast string hash (FNV-1a) to compare HTML content
 function fastHash(str) {
@@ -236,8 +317,7 @@ async function fetchAppState() {
 
         // Mode sync - desktop is source of truth
         if (data.mode && data.mode !== 'Unknown') {
-            modeText.textContent = data.mode;
-            currentMode = data.mode;
+            setCurrentModeValue(data.mode);
         }
 
         // Model sync - desktop is source of truth
@@ -249,7 +329,7 @@ async function fetchAppState() {
         // Running state sync - toggle send/stop button
         document.body.classList.toggle('agent-running', !!data.isRunning);
         updateWorkspaceChrome({
-            mode: data.mode && data.mode !== 'Unknown' ? data.mode : modeText.textContent,
+            mode: data.mode && data.mode !== 'Unknown' ? getModeDisplayLabel(data.mode) : modeText.textContent,
             model: data.model && data.model !== 'Unknown' ? data.model : modelText.textContent,
             running: !!data.isRunning
         });
@@ -307,20 +387,137 @@ function dismissSslBanner() {
 checkSslStatus();
 // --- Dropdown fallbacks ---
 const MODE_FALLBACK_OPTIONS = [
-    { name: 'Agent', description: 'Delegates multi-step work to Cursor agent when supported by your build.' },
-    { name: 'Ask', description: 'Keeps the interaction in ask mode when that option is available.' },
-    { name: 'Manual', description: 'Uses the manual composer mode when your Cursor build exposes it.' },
-    { name: 'Planning', description: 'Legacy planning mode used by older Cursor builds.' },
-    { name: 'Fast', description: 'Legacy fast mode used by older Cursor builds.' }
+    { label: 'Agent', requestValue: 'Agent', icon: 'agent' },
+    { label: 'Plan', requestValue: 'Plan', icon: 'plan' },
+    { label: 'Debug', requestValue: 'Debug', icon: 'debug' },
+    { label: 'Ask', requestValue: 'Ask', icon: 'ask' }
 ];
+const MODE_DISPLAY_ALIASES = {
+    agent: 'Agent',
+    fast: 'Agent',
+    plan: 'Plan',
+    planning: 'Plan',
+    debug: 'Debug',
+    manual: 'Debug',
+    ask: 'Ask'
+};
 const MODEL_FALLBACK_OPTIONS = [
-    { name: "Gemini 3.1 Pro (High)", badge: "New" },
-    { name: "Gemini 3.1 Pro (Low)", badge: "New" },
-    { name: "Gemini 3 Flash" },
-    { name: "Claude Sonnet 4.6 (Thinking)" },
-    { name: "Claude Opus 4.6 (Thinking)" },
-    { name: "GPT-OSS 120B (Medium)" }
+    { name: 'Composer 1.5' },
+    { name: 'GPT-5.4' },
+    { name: 'GPT-5.3 Codex' },
+    { name: 'Sonnet 4.6' },
+    { name: 'Opus 4.6' },
+    { name: 'Gemini 3 Flash' },
+    { name: 'gpt-4' }
 ];
+const MODEL_FALLBACK_TOGGLES = [
+    { key: 'auto', label: 'Auto', description: 'Balanced quality and speed, recommended for most tasks', enabled: false },
+    { key: 'max-mode', label: 'MAX Mode', description: '', enabled: false },
+    { key: 'multi-model', label: 'Use Multiple Models', description: '', enabled: false }
+];
+
+function getModeDisplayLabel(value = '') {
+    const normalized = String(value || '').trim();
+    if (!normalized) return 'Agent';
+    return MODE_DISPLAY_ALIASES[normalized.toLowerCase()] || normalized;
+}
+
+function getModeIconName(value = '') {
+    const label = getModeDisplayLabel(value);
+    return MODE_FALLBACK_OPTIONS.find((option) => option.label === label)?.icon || 'agent';
+}
+
+function getModeIconSvg(iconName) {
+    const common = 'width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"';
+    switch (iconName) {
+        case 'plan':
+            return `<svg ${common}><circle cx="3" cy="4" r="1"></circle><circle cx="3" cy="8" r="1"></circle><circle cx="3" cy="12" r="1"></circle><path d="M6 4h7"></path><path d="M6 8h7"></path><path d="M6 12h7"></path></svg>`;
+        case 'debug':
+            return `<svg ${common}><path d="M6.5 2.5h3"></path><path d="M5.5 5.5h5l1.2 1.5v2.2L10.4 12h-4.8L4.3 9.2V7z"></path><path d="M3.3 6.2 2 5"></path><path d="m12.7 6.2 1.3-1.2"></path><path d="M8 5.5v6.5"></path><path d="M5.3 9h5.4"></path></svg>`;
+        case 'ask':
+            return `<svg ${common}><path d="M4.2 3.5h7.6a2.1 2.1 0 0 1 2.1 2.1v4.1a2.1 2.1 0 0 1-2.1 2.1H7.1l-2.8 2v-2H4.2a2.1 2.1 0 0 1-2.1-2.1V5.6a2.1 2.1 0 0 1 2.1-2.1Z"></path></svg>`;
+        case 'agent':
+        default:
+            return `<svg ${common}><path d="M3.1 9c0-1.7 1.1-3 2.5-3s2.5 1.3 2.5 3-1.1 3-2.5 3-2.5-1.3-2.5-3Z"></path><path d="M7.9 9c0-1.7 1.1-3 2.5-3s2.5 1.3 2.5 3-1.1 3-2.5 3-2.5-1.3-2.5-3Z"></path></svg>`;
+    }
+}
+
+function setCurrentModeValue(value) {
+    const displayValue = getModeDisplayLabel(value);
+    currentMode = displayValue;
+    modeText.textContent = displayValue;
+    modeBtn.dataset.mode = displayValue.toLowerCase();
+    return displayValue;
+}
+
+setCurrentModeValue(currentMode);
+applyTheme(localStorage.getItem('crTheme') || 'dark');
+
+function normalizeModeDropdownState(data = {}) {
+    const currentRaw = data.current && data.current !== 'Unknown' ? data.current : currentMode;
+    const items = [];
+    const seen = new Set();
+
+    const pushItem = (rawValue, fallbackRequestValue = rawValue) => {
+        const displayValue = getModeDisplayLabel(rawValue);
+        if (!displayValue) return;
+
+        const key = displayValue.toLowerCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+
+        items.push({
+            label: displayValue,
+            requestValue: String(rawValue || fallbackRequestValue || displayValue).trim() || displayValue,
+            icon: getModeIconName(displayValue)
+        });
+    };
+
+    if (Array.isArray(data.options) && data.options.length) {
+        data.options.forEach((option) => pushItem(option));
+    }
+
+    if (!items.length) {
+        MODE_FALLBACK_OPTIONS.forEach((option) => {
+            items.push({ ...option });
+            seen.add(option.label.toLowerCase());
+        });
+    }
+
+    const currentDisplay = getModeDisplayLabel(currentRaw);
+    if (!items.some((item) => item.label === currentDisplay)) {
+        items.unshift({
+            label: currentDisplay,
+            requestValue: String(currentRaw || currentDisplay).trim() || currentDisplay,
+            icon: getModeIconName(currentDisplay)
+        });
+    }
+
+    return {
+        current: currentDisplay,
+        items
+    };
+}
+
+function getModelDropdownFallbackState(overrides = {}) {
+    const fallbackCurrent = overrides.current && overrides.current !== 'Unknown'
+        ? overrides.current
+        : (currentModel && currentModel !== 'Unknown'
+            ? currentModel
+            : (modelText?.textContent || MODEL_FALLBACK_OPTIONS[0]?.name || 'Auto'));
+    const fallbackAutoEnabled = /^auto$/i.test(fallbackCurrent);
+
+    return {
+        current: fallbackCurrent,
+        options: MODEL_FALLBACK_OPTIONS.map(item => item.name),
+        toggles: MODEL_FALLBACK_TOGGLES.map(toggle => ({
+            ...toggle,
+            enabled: toggle.key === 'auto' ? fallbackAutoEnabled : toggle.enabled
+        })),
+        searchPlaceholder: 'Search models',
+        footerLabel: 'Add Models'
+    };
+}
 
 function timeAgo(dateStr) {
     if (!dateStr) return '';
@@ -336,10 +533,14 @@ function timeAgo(dateStr) {
 
 function setHomeScreen(enabled) {
     document.body.classList.toggle('home-screen', enabled);
+    messageInput.placeholder = enabled ? HOME_COMPOSER_PLACEHOLDER : DEFAULT_COMPOSER_PLACEHOLDER;
+    refreshBtn.setAttribute('aria-label', enabled ? 'New Chat' : 'Refresh');
+    refreshBtn.setAttribute('data-tooltip', enabled ? 'New Chat' : 'Refresh');
+    fullscreenBtn.setAttribute('aria-label', enabled ? 'Close' : document.fullscreenElement ? 'Exit Fullscreen' : 'Fullscreen');
+    fullscreenBtn.setAttribute('data-tooltip', enabled ? 'Close' : document.fullscreenElement ? 'Exit Fullscreen' : 'Fullscreen');
 
     if (enabled) {
         setTextContent(homeContextAgent, 'Cursor');
-        loadHomeRecents();
     }
 }
 
@@ -1224,6 +1425,7 @@ async function sendMessage() {
     messageInput.value = ''; // Clear immediately
     messageInput.style.height = 'auto'; // Reset height
     messageInput.blur(); // Close keyboard on mobile immediately
+    syncShellPromptFromComposer('');
 
     sendBtn.disabled = true;
     sendBtn.style.opacity = '0.5';
@@ -1270,6 +1472,11 @@ async function sendMessage() {
 sendBtn.addEventListener('click', sendMessage);
 
 refreshBtn.addEventListener('click', () => {
+    if (document.body.classList.contains('home-screen')) {
+        startNewChat();
+        return;
+    }
+
     // Refresh both Chat and State (Mode/Model)
     loadSnapshot();
     fetchAppState(); // PRIORITY: Sync from Desktop
@@ -1285,6 +1492,7 @@ messageInput.addEventListener('keydown', (e) => {
 messageInput.addEventListener('input', function () {
     this.style.height = 'auto';
     this.style.height = (this.scrollHeight) + 'px';
+    syncShellPromptFromComposer(this.value);
 });
 
 // --- File Attach Logic ---
@@ -1710,10 +1918,7 @@ async function checkChatStatus() {
 
 // --- Empty State (No Chat Open) ---
 function showEmptyState() {
-    chatContent.innerHTML = `
-        <div class="chat-home-spacer" aria-hidden="true">
-        </div>
-    `;
+    renderHomeShell();
     setHomeScreen(true);
     updateWorkspaceChrome({ snapshotReady: false });
 }
@@ -1788,21 +1993,49 @@ function buildDropdownMenu(menu, title, options, currentValue, descriptions = {}
 }
 
 function normalizeModelDropdownState(data = {}) {
-    const current = data.current && data.current !== 'Unknown' ? data.current : currentModel;
-    const autoEnabled = typeof data.autoEnabled === 'boolean' ? data.autoEnabled : /^auto$/i.test(current);
-    const autoAvailable = typeof data.autoAvailable === 'boolean' ? data.autoAvailable : autoEnabled;
-    const options = Array.isArray(data.options)
-        ? data.options.filter((value) => value && !(autoAvailable && /^auto$/i.test(value)))
+    const fallback = getModelDropdownFallbackState(data);
+    const current = data.current && data.current !== 'Unknown' ? data.current : fallback.current;
+    const incomingToggles = Array.isArray(data.toggles) && data.toggles.length
+        ? data.toggles
         : [];
+    const legacyAutoEnabled = typeof data.autoEnabled === 'boolean' ? data.autoEnabled : /^auto$/i.test(current);
+    const toggles = MODEL_FALLBACK_TOGGLES.map((fallbackToggle) => {
+        const incoming = incomingToggles.find((toggle) =>
+            toggle?.key === fallbackToggle.key ||
+            String(toggle?.label || '').toLowerCase() === fallbackToggle.label.toLowerCase()
+        );
+
+        if (incoming) {
+            return {
+                key: incoming.key || fallbackToggle.key,
+                label: incoming.label || fallbackToggle.label,
+                description: incoming.description || '',
+                enabled: typeof incoming.enabled === 'boolean'
+                    ? incoming.enabled
+                    : (fallbackToggle.key === 'auto' ? legacyAutoEnabled : fallbackToggle.enabled)
+            };
+        }
+
+        if (fallbackToggle.key === 'auto') {
+            return {
+                ...fallbackToggle,
+                description: data.autoDescription || fallbackToggle.description,
+                enabled: legacyAutoEnabled
+            };
+        }
+
+        return { ...fallbackToggle };
+    });
+    const options = Array.isArray(data.options) && data.options.length
+        ? data.options.filter((value) => value && !/^auto$/i.test(value))
+        : fallback.options.filter((value) => value && !/^auto$/i.test(value));
 
     return {
         current,
         options,
-        autoAvailable,
-        autoEnabled,
-        autoLabel: data.autoLabel || 'Auto',
-        autoDescription: data.autoDescription || 'Balanced quality and speed, recommended for most tasks',
-        searchPlaceholder: data.searchPlaceholder || 'Search models'
+        toggles,
+        searchPlaceholder: data.searchPlaceholder || fallback.searchPlaceholder,
+        footerLabel: data.footerLabel || fallback.footerLabel
     };
 }
 
@@ -1826,7 +2059,10 @@ function renderModelOptionsList(listEl, state, filterText = '') {
         item.type = 'button';
         item.className = 'dropdown-option model-option' + (value === state.current ? ' active' : '');
         item.dataset.value = value;
-        item.innerHTML = `<span class="model-option-name">${escapeHtml(value)}</span>`;
+        item.innerHTML = `
+            <span class="model-option-name">${escapeHtml(value)}</span>
+            <span class="model-option-check" aria-hidden="true">${value === state.current ? '&#10003;' : ''}</span>
+        `;
         listEl.appendChild(item);
     });
 }
@@ -1851,29 +2087,54 @@ function buildModelDropdownMenu(menu, state) {
     `;
     panel.appendChild(searchWrap);
 
-    if (state.autoAvailable) {
-        const autoRow = document.createElement('button');
-        autoRow.type = 'button';
-        autoRow.className = 'model-auto-row' + (state.autoEnabled ? ' active' : '');
-        autoRow.dataset.value = 'Auto';
-        autoRow.innerHTML = `
-            <span class="model-auto-copy">
-                <span class="model-auto-title">${escapeHtml(state.autoLabel)}</span>
-                <span class="model-auto-desc">${escapeHtml(state.autoDescription)}</span>
-            </span>
-            <span class="model-auto-toggle${state.autoEnabled ? ' is-on' : ''}" aria-hidden="true">
-                <span class="model-auto-toggle-knob"></span>
-            </span>
-        `;
-        panel.appendChild(autoRow);
+    if (Array.isArray(state.toggles) && state.toggles.length) {
+        const toggleList = document.createElement('div');
+        toggleList.className = 'model-toggle-list';
+        state.toggles.forEach((toggle) => {
+            const row = document.createElement('button');
+            row.type = 'button';
+            row.className = 'model-toggle-row' + (toggle.enabled ? ' active' : '');
+            row.dataset.toggleKey = toggle.key;
+            row.innerHTML = `
+                <span class="model-toggle-copy">
+                    <span class="model-toggle-title">${escapeHtml(toggle.label)}</span>
+                    ${toggle.description ? `<span class="model-toggle-desc">${escapeHtml(toggle.description)}</span>` : ''}
+                </span>
+                <span class="model-toggle-switch${toggle.enabled ? ' is-on' : ''}" aria-hidden="true">
+                    <span class="model-toggle-knob"></span>
+                </span>
+            `;
+            toggleList.appendChild(row);
+        });
+        panel.appendChild(toggleList);
     }
+
+    const topDivider = document.createElement('div');
+    topDivider.className = 'model-menu-divider';
+    panel.appendChild(topDivider);
 
     const listEl = document.createElement('div');
     listEl.className = 'model-options-list';
     panel.appendChild(listEl);
-    menu.appendChild(panel);
-
     renderModelOptionsList(listEl, state);
+
+    if (state.footerLabel) {
+        const bottomDivider = document.createElement('div');
+        bottomDivider.className = 'model-menu-divider';
+        panel.appendChild(bottomDivider);
+
+        const footer = document.createElement('button');
+        footer.type = 'button';
+        footer.className = 'model-footer-row';
+        footer.dataset.action = 'add-models';
+        footer.innerHTML = `
+            <span class="model-footer-label">${escapeHtml(state.footerLabel)}</span>
+            <span class="model-footer-chevron" aria-hidden="true">&#8250;</span>
+        `;
+        panel.appendChild(footer);
+    }
+
+    menu.appendChild(panel);
 
     const searchInput = searchWrap.querySelector('.model-search-input');
     if (searchInput) {
@@ -1887,6 +2148,25 @@ function setDropdownLoading(menu, title) {
     menu.innerHTML = `<div class="dropdown-title">${title}</div><div class="dropdown-option" data-value="">Loading...</div>`;
 }
 
+function buildModeDropdownMenu(menu, state) {
+    menu.innerHTML = '';
+
+    state.items.forEach((item) => {
+        const option = document.createElement('div');
+        option.className = 'mode-dropdown-option' + (item.label === state.current ? ' active' : '');
+        option.dataset.value = item.label;
+        option.dataset.requestValue = item.requestValue;
+        option.innerHTML = `
+            <span class="mode-dropdown-main">
+                <span class="mode-dropdown-icon" aria-hidden="true">${getModeIconSvg(item.icon)}</span>
+                <span class="mode-dropdown-label">${escapeHtml(item.label)}</span>
+            </span>
+            <span class="mode-dropdown-check" aria-hidden="true">${item.label === state.current ? '&#10003;' : ''}</span>
+        `;
+        menu.appendChild(option);
+    });
+}
+
 async function openModeDropdown() {
     const isOpen = modeMenu.classList.contains('show');
     if (isOpen) {
@@ -1894,26 +2174,22 @@ async function openModeDropdown() {
         return;
     }
 
-    const descriptionMap = Object.fromEntries(MODE_FALLBACK_OPTIONS.map(item => [item.name, item.description || '']));
     setDropdownLoading(modeMenu, 'Mode');
     toggleDropdown(modeMenu, modeBtn);
 
     try {
         const data = await fetchDropdownOptions('mode');
-        const options = Array.isArray(data.options) && data.options.length
-            ? data.options
-            : (data.current && data.current !== 'Unknown' ? [data.current] : [currentMode].filter(Boolean));
-        availableModes = options;
-
+        const normalized = normalizeModeDropdownState(data);
+        availableModes = normalized.items.map((item) => item.label);
         if (data.current && data.current !== 'Unknown') {
-            currentMode = data.current;
-            modeText.textContent = data.current;
+            setCurrentModeValue(data.current);
+            normalized.current = getModeDisplayLabel(data.current);
         }
-
-        buildDropdownMenu(modeMenu, 'Mode', options, currentMode, descriptionMap);
+        buildModeDropdownMenu(modeMenu, normalized);
     } catch (e) {
-        availableModes = [currentMode].filter(Boolean);
-        buildDropdownMenu(modeMenu, 'Mode', availableModes, currentMode, descriptionMap);
+        const normalized = normalizeModeDropdownState({ current: currentMode });
+        availableModes = normalized.items.map((item) => item.label);
+        buildModeDropdownMenu(modeMenu, normalized);
     }
 }
 
@@ -1929,26 +2205,33 @@ async function openModelDropdown() {
 
     try {
         const data = await fetchDropdownOptions('model');
-        const fallbackOptions = data.current && data.current !== 'Unknown' ? [data.current] : [currentModel].filter(Boolean);
-        const normalized = normalizeModelDropdownState({
-            ...data,
-            options: Array.isArray(data.options) && data.options.length ? data.options : fallbackOptions
+        const hasStructuredModelMenu = !data.error && (
+            (Array.isArray(data.options) && data.options.length > 0) ||
+            (Array.isArray(data.toggles) && data.toggles.length > 0) ||
+            (data.current && data.current !== 'Unknown')
+        );
+        const fallbackState = getModelDropdownFallbackState({
+            current: currentModel && currentModel !== 'Unknown' ? currentModel : modelText.textContent
         });
+        const normalized = normalizeModelDropdownState(
+            hasStructuredModelMenu
+                ? data
+                : fallbackState
+        );
 
         availableModels = normalized.options;
         lastModelDropdownState = normalized;
 
-        if (normalized.current && normalized.current !== 'Unknown') {
+        if (hasStructuredModelMenu && normalized.current && normalized.current !== 'Unknown') {
             currentModel = normalized.current;
             modelText.textContent = normalized.current;
         }
 
         buildModelDropdownMenu(modelMenu, normalized);
     } catch (e) {
-        const normalized = normalizeModelDropdownState({
-            current: currentModel,
-            options: [currentModel].filter(Boolean)
-        });
+        const normalized = normalizeModelDropdownState(getModelDropdownFallbackState({
+            current: currentModel && currentModel !== 'Unknown' ? currentModel : modelText.textContent
+        }));
         availableModels = normalized.options;
         lastModelDropdownState = normalized;
         buildModelDropdownMenu(modelMenu, normalized);
@@ -1959,12 +2242,14 @@ async function openModelDropdown() {
 modeBtn.addEventListener('click', openModeDropdown);
 
 modeMenu.addEventListener('click', async (e) => {
-    const opt = e.target.closest('.dropdown-option');
+    const opt = e.target.closest('.mode-dropdown-option');
     if (!opt) return;
-    const mode = opt.dataset.value;
+    const mode = opt.dataset.requestValue;
+    const displayMode = opt.dataset.value || getModeDisplayLabel(mode);
     if (!mode) return;
     closeAllDropdowns();
 
+    const previousMode = currentMode;
     modeText.textContent = 'Setting...';
     try {
         const res = await fetchWithAuth('/set-mode', {
@@ -1973,20 +2258,18 @@ modeMenu.addEventListener('click', async (e) => {
             body: JSON.stringify({ mode })
         });
         const data = await res.json();
-        if (data.success) {
-            currentMode = data.currentMode || mode;
-            modeText.textContent = currentMode;
-            updateWorkspaceChrome({ mode: currentMode });
-            // Update active state
-            modeMenu.querySelectorAll('.dropdown-option').forEach(o => {
-                o.classList.toggle('active', o.dataset.value === currentMode);
-            });
+        if (res.ok && data.success) {
+            const appliedMode = setCurrentModeValue(data.currentMode || displayMode);
+            updateWorkspaceChrome({ mode: appliedMode });
+        } else if (res.status === 503 || /cdp disconnected/i.test(String(data.error || ''))) {
+            const appliedMode = setCurrentModeValue(displayMode);
+            updateWorkspaceChrome({ mode: appliedMode });
         } else {
             alert('Error: ' + (data.error || 'Unknown'));
-            modeText.textContent = currentMode;
+            setCurrentModeValue(previousMode);
         }
     } catch (e) {
-        modeText.textContent = currentMode;
+        setCurrentModeValue(previousMode);
     }
 });
 
@@ -2010,7 +2293,11 @@ async function applyModelSelection(model, prev = currentModel || modelText.textC
             updateWorkspaceChrome({ model: currentModel });
             if (lastModelDropdownState) {
                 lastModelDropdownState.current = currentModel;
-                lastModelDropdownState.autoEnabled = /^auto$/i.test(currentModel);
+                lastModelDropdownState.toggles = (lastModelDropdownState.toggles || []).map((toggle) =>
+                    toggle.key === 'auto'
+                        ? { ...toggle, enabled: /^auto$/i.test(currentModel) }
+                        : toggle
+                );
             }
             return true;
         }
@@ -2024,17 +2311,62 @@ async function applyModelSelection(model, prev = currentModel || modelText.textC
     return false;
 }
 
-modelMenu.addEventListener('click', async (e) => {
-    const autoRow = e.target.closest('.model-auto-row');
-    if (autoRow) {
-        e.preventDefault();
-        const autoState = lastModelDropdownState || normalizeModelDropdownState({ current: currentModel, options: availableModels });
-        if (!autoState.autoEnabled) {
-            const success = await applyModelSelection('Auto');
-            if (success) {
-                closeAllDropdowns();
-            }
+async function applyModelToggle(toggleKey, enabled) {
+    if (!toggleKey) return false;
+
+    try {
+        const res = await fetchWithAuth('/set-model-toggle', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key: toggleKey, enabled })
+        });
+        const data = await res.json();
+        if (data.success) {
+            const normalized = normalizeModelDropdownState({
+                current: data.currentModel || currentModel,
+                options: lastModelDropdownState?.options || MODEL_FALLBACK_OPTIONS.map(item => item.name),
+                toggles: Array.isArray(data.toggles) && data.toggles.length ? data.toggles : lastModelDropdownState?.toggles,
+                footerLabel: lastModelDropdownState?.footerLabel || 'Add Models'
+            });
+            currentModel = normalized.current || currentModel;
+            modelText.textContent = currentModel;
+            updateWorkspaceChrome({ model: currentModel });
+            availableModels = normalized.options;
+            lastModelDropdownState = normalized;
+            buildModelDropdownMenu(modelMenu, normalized);
+            return true;
         }
+    } catch (e) {
+        console.error('Model toggle failed:', e);
+    }
+
+    return false;
+}
+
+modelMenu.addEventListener('click', async (e) => {
+    const toggleRow = e.target.closest('.model-toggle-row');
+    if (toggleRow) {
+        e.preventDefault();
+        const toggleKey = toggleRow.dataset.toggleKey;
+        const currentState = (lastModelDropdownState?.toggles || []).find((toggle) => toggle.key === toggleKey);
+        if (!currentState) return;
+
+        let success = await applyModelToggle(toggleKey, !currentState.enabled);
+        if (!success && toggleKey === 'auto' && !currentState.enabled) {
+            success = await applyModelSelection('Auto');
+        }
+
+        if (success) {
+            modelMenu.classList.add('show');
+            modelBtn.classList.add('open');
+            dropdownBackdrop.classList.add('show');
+        }
+        return;
+    }
+
+    const footerRow = e.target.closest('.model-footer-row');
+    if (footerRow) {
+        e.preventDefault();
         return;
     }
 
