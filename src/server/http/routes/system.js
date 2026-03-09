@@ -101,6 +101,7 @@ export function registerSystemRoutes(app, {
     authToken,
     certsExist,
     getCdpConnection,
+    getAppState,
     getJson,
     getLocalIP,
     getSnapshot,
@@ -121,7 +122,30 @@ export function registerSystemRoutes(app, {
         res.json({ success: true });
     });
 
-    app.get('/snapshot', (req, res) => {
+    app.get('/snapshot', async (req, res) => {
+        const cdpConnection = getCdpConnection();
+        if (!cdpConnection) {
+            return res.status(503).json({ error: 'No live snapshot available' });
+        }
+
+        if (typeof getAppState === 'function') {
+            try {
+                const appState = await getAppState(cdpConnection);
+                const hasLiveCursorView = !!(
+                    appState?.hasChat
+                    || appState?.editorFound
+                    || (Array.isArray(appState?.chatTabs) && appState.chatTabs.length > 0)
+                    || appState?.activeChatTitle
+                );
+
+                if (!hasLiveCursorView) {
+                    return res.status(503).json({ error: 'No live chat available' });
+                }
+            } catch (error) {
+                return res.status(503).json({ error: 'Live snapshot validation failed' });
+            }
+        }
+
         const snapshot = getSnapshot();
         if (!snapshot) {
             return res.status(503).json({ error: 'No snapshot available yet' });
