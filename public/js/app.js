@@ -84,6 +84,10 @@ function setTextContent(element, value) {
     if (element) element.textContent = value;
 }
 
+function normalizeChatTitle(title) {
+    return typeof title === 'string' ? title.trim() : '';
+}
+
 function getTransportLabel() {
     if (window.location.protocol === 'https:') return 'HTTPS + WSS';
     if (isLoopbackHost) return 'Local HTTP + WS';
@@ -94,6 +98,21 @@ function syncShellPromptFromComposer(value = messageInput.value) {
     const shellInput = document.getElementById('shellPromptInput');
     if (!shellInput) return;
     shellInput.value = value;
+}
+
+function extractActiveChatTitleFromSnapshot() {
+    if (!chatContent) return '';
+
+    const titleSource = chatContent.querySelector('[data-message-role="human"][style*="position: sticky"]')
+        || chatContent.querySelector('[data-message-role="human"]');
+    if (!titleSource) return '';
+
+    const lines = (titleSource.innerText || titleSource.textContent || '')
+        .split('\n')
+        .map((line) => normalizeChatTitle(line))
+        .filter(Boolean);
+
+    return lines[0] || '';
 }
 
 function updateCursorShellStatus({ connected, running, snapshotReady }) {
@@ -185,6 +204,10 @@ function updateWorkspaceChrome(overrides = {}) {
         detail = 'The transport is ready. Cursor still needs to expose a live chat snapshot.';
     }
 
+    const heroTitle = !document.body.classList.contains('home-screen') && activeChatTitle
+        ? activeChatTitle
+        : title;
+
     const transport = getTransportLabel();
     const protocolChip = isLoopbackHost
         ? 'Local webview'
@@ -192,7 +215,7 @@ function updateWorkspaceChrome(overrides = {}) {
             ? 'Secure web'
             : 'LAN web';
 
-    setTextContent(heroStatusTitle, title);
+    setTextContent(heroStatusTitle, heroTitle);
     setTextContent(heroStatusDetail, detail);
     setTextContent(sidebarConnectionTitle, title);
     setTextContent(sidebarConnectionDetail, detail);
@@ -283,6 +306,40 @@ let hasSnapshotLoaded = false;
 let availableModes = [];
 let availableModels = [];
 let lastModelDropdownState = null;
+let activeChatTitle = '';
+
+function setActiveChatTitle(title) {
+    const normalizedTitle = normalizeChatTitle(title);
+    if (activeChatTitle === normalizedTitle) return;
+    activeChatTitle = normalizedTitle;
+    if (!document.body.classList.contains('home-screen')) {
+        updateWorkspaceChrome();
+    }
+}
+
+function updateActiveChatTitleFromHistory(chats, force = false) {
+    const nextTitle = Array.isArray(chats) && chats.length > 0
+        ? normalizeChatTitle(chats[0]?.title)
+        : '';
+
+    if (nextTitle && (!activeChatTitle || force)) {
+        setActiveChatTitle(nextTitle);
+    } else if (force) {
+        setActiveChatTitle('');
+    }
+}
+
+async function refreshActiveChatTitle(force = false) {
+    try {
+        const res = await fetchWithAuth('/chat-history');
+        const data = await res.json();
+        updateActiveChatTitleFromHistory(data.chats, force);
+    } catch (e) {
+        if (force) {
+            setActiveChatTitle('');
+        }
+    }
+}
 
 // Fast string hash (FNV-1a) to compare HTML content
 function fastHash(str) {
@@ -559,6 +616,7 @@ async function loadHomeRecents() {
     try {
         const res = await fetchWithAuth('/chat-history');
         const data = await res.json();
+        updateActiveChatTitleFromHistory(data.chats);
         const chats = Array.isArray(data.chats) ? data.chats.slice(0, 3) : [];
 
         if (data.error || chats.length === 0) {
@@ -699,6 +757,9 @@ function renderSnapshot(data) {
     }
 
     setHomeScreen(false);
+    if (!activeChatTitle) {
+        refreshActiveChatTitle();
+    }
 
     // Capture scroll state BEFORE updating content
     const scrollPos = chatContainer.scrollTop;
@@ -1094,6 +1155,22 @@ ${snapshotRootScope} [data-message-role="human"][style*="position: sticky"] {
     position: sticky !important;
     top: 6px !important;
     z-index: 25 !important;
+    margin-left: 0 !important;
+    max-width: none !important;
+    padding: 0 8px 8px !important;
+}
+
+${snapshotRootScope} [data-message-role="human"][style*="position: sticky"] .composer-human-message-container {
+    justify-content: flex-start !important;
+}
+
+${snapshotRootScope} [data-message-role="human"][style*="position: sticky"] .composer-human-message,
+${snapshotRootScope} [data-message-role="human"][style*="position: sticky"] .human-message-with-todos-wrapper {
+    width: 100% !important;
+    background: #33353a !important;
+    border: 1px solid rgba(255, 255, 255, 0.04) !important;
+    border-radius: 8px !important;
+    box-shadow: none !important;
 }
 
 ${snapshotRootScope} .ui-step-group-header,
@@ -1219,6 +1296,11 @@ ${snapshotRootScope} [data-message-kind="tool"] {
 
         // Add mobile copy buttons to all code blocks
         addMobileCopyButtons();
+
+        const snapshotTitle = extractActiveChatTitleFromSnapshot();
+        if (snapshotTitle) {
+            setActiveChatTitle(snapshotTitle);
+        }
     }
 
     // Smart scroll behavior: respect user scroll, only auto-scroll when appropriate
@@ -1712,6 +1794,7 @@ async function startNewChat() {
         const data = await res.json();
 
         if (data.success) {
+            setActiveChatTitle('');
             // Reload snapshot to show new empty chat
             setTimeout(loadSnapshot, 500);
             setTimeout(loadSnapshot, 1000);
@@ -1769,6 +1852,7 @@ async function showChatHistory() {
     try {
         const res = await fetchWithAuth('/chat-history');
         const data = await res.json();
+        updateActiveChatTitleFromHistory(data.chats, true);
 
         if (data.error) {
             historyList.innerHTML = `
@@ -1906,6 +1990,7 @@ async function selectChat(title) {
         const data = await res.json();
 
         if (data.success) {
+            setActiveChatTitle(title);
             setHomeScreen(false);
             setTimeout(loadSnapshot, 300);
             setTimeout(loadSnapshot, 800);
@@ -1931,6 +2016,9 @@ async function checkChatStatus() {
             showEmptyState();
         } else {
             setHomeScreen(false);
+            if (!activeChatTitle) {
+                refreshActiveChatTitle();
+            }
         }
     } catch (e) {
         console.error('Chat status check failed:', e);
@@ -1940,6 +2028,7 @@ async function checkChatStatus() {
 // --- Empty State (No Chat Open) ---
 function showEmptyState() {
     hasSnapshotLoaded = false;
+    setActiveChatTitle('');
     renderHomeShell();
     setHomeScreen(true);
     updateWorkspaceChrome({ snapshotReady: false });
