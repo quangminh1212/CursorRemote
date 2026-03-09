@@ -143,7 +143,7 @@ export function registerCursorRoutes(app, {
     app.get('/app-state', async (req, res) => {
         const cdpConnection = getCdpConnection();
         if (!cdpConnection) {
-            return res.json({ mode: 'Unknown', model: 'Unknown', isRunning: false, hasChat: false, hasMessages: false, editorFound: false });
+            return res.json({ mode: 'Unknown', model: 'Unknown', isRunning: false, hasChat: false, hasMessages: false, editorFound: false, activeChatTitle: '', chatTabs: [] });
         }
 
         const result = await getAppState(cdpConnection);

@@ -218,6 +218,17 @@ const __cr = (() => {
         return match ? match[1] : normalized;
     };
 
+    const isTabActive = (el) => {
+        if (!el) return false;
+        const ariaSelected = (el.getAttribute?.('aria-selected') || '').toLowerCase();
+        const ariaCurrent = (el.getAttribute?.('aria-current') || '').toLowerCase();
+        if (ariaSelected === 'true') return true;
+        if (ariaCurrent && ariaCurrent !== 'false') return true;
+
+        const cls = getClassName(el).toLowerCase();
+        return cls.includes('checked') || cls.includes('active') || cls.includes('selected') || cls.includes('current');
+    };
+
     const findPanel = () => {
         const candidates = uniqueElements([
             ...queryAllVisible('[id^="workbench.panel.aichat"]'),
@@ -237,6 +248,89 @@ const __cr = (() => {
         });
 
         return candidates[0] || null;
+    };
+
+    const findChatTabsContainer = () => {
+        const panel = findPanel();
+        const panelRect = panel?.getBoundingClientRect?.() || null;
+        const containers = uniqueElements(
+            queryAllVisible('[role="tab"], .composite-bar-action-tab', document)
+                .map(tab => tab.closest?.('.composite.title.has-composite-bar, .composite-bar-container, .composite-bar, .monaco-action-bar, [class*="auxiliary-bar-title"]'))
+                .filter(isVisible)
+        );
+
+        containers.sort((a, b) => {
+            const score = (container) => {
+                if (!container) return -Infinity;
+                const rect = container.getBoundingClientRect();
+                const tabs = uniqueElements(Array.from(container.querySelectorAll('[role="tab"], .composite-bar-action-tab')).filter(isVisible));
+                if (!tabs.length) return -Infinity;
+
+                let value = tabs.length * 6;
+                if (tabs.some(isTabActive)) value += 20;
+                if (rect.height <= 56) value += 10;
+                if (rect.width >= 180) value += 6;
+
+                if (panelRect) {
+                    const overlap = Math.max(0, Math.min(rect.right, panelRect.right) - Math.max(rect.left, panelRect.left));
+                    if (overlap > 0) {
+                        value += Math.min(12, (overlap / Math.max(Math.min(rect.width, panelRect.width), 1)) * 12);
+                    }
+
+                    const gap = panelRect.top >= rect.bottom
+                        ? panelRect.top - rect.bottom
+                        : rect.top >= panelRect.bottom
+                            ? rect.top - panelRect.bottom
+                            : 0;
+                    value += Math.max(0, 10 - (gap / 12));
+                    if (rect.top <= panelRect.top) value += 6;
+                }
+
+                return value;
+            };
+
+            return score(b) - score(a);
+        });
+
+        return containers[0] || null;
+    };
+
+    const getChatTabs = () => {
+        const container = findChatTabsContainer();
+        if (!container) return [];
+
+        const seen = new Set();
+        return uniqueElements(Array.from(container.querySelectorAll('[role="tab"], .composite-bar-action-tab')).filter(isVisible))
+            .map((el) => {
+                const title = normalizeText(el.getAttribute?.('aria-label') || textOf(el));
+                if (!title || title.length > 120) return null;
+
+                const lower = title.toLowerCase();
+                if (lower === 'more actions' || lower === 'more actions...') return null;
+                if (seen.has(lower)) return null;
+                seen.add(lower);
+
+                return {
+                    title,
+                    active: isTabActive(el)
+                };
+            })
+            .filter(Boolean);
+    };
+
+    const getActiveChatTitle = () => {
+        const tabs = getChatTabs();
+        const activeTab = tabs.find(tab => tab.active);
+        if (activeTab?.title) return activeTab.title;
+
+        const panel = findPanel();
+        const paneHeader = panel?.closest?.('.pane')?.querySelector?.('.pane-header, .pane-header .title, .pane-header h3');
+        const rawTitle = normalizeText(paneHeader?.getAttribute?.('aria-label') || textOf(paneHeader));
+        if (rawTitle) {
+            return rawTitle.replace(/\s+section$/i, '').trim();
+        }
+
+        return '';
     };
 
     const findEditor = () => {
@@ -821,9 +915,12 @@ const __cr = (() => {
         findPanel,
         findEditor,
         findPanelScrollRoot,
+        findChatTabsContainer,
         click,
         focusEditor,
         setEditorText,
+        getChatTabs,
+        getActiveChatTitle,
         findNewChatButton,
         findHistoryButton,
         findAttachButton,
@@ -1480,6 +1577,8 @@ async function captureSnapshot(cdp) {
     const result = await evaluateCursor(cdp, `
         const panel = __cr.findPanel();
         const editor = __cr.findEditor();
+        const chatTabs = __cr.getChatTabs();
+        const activeChatTitle = __cr.getActiveChatTitle();
 
         if (!panel || !editor) {
             return {
@@ -1527,6 +1626,8 @@ async function captureSnapshot(cdp) {
             color: panelStyles.color || bodyStyles.color,
             bodyColor: bodyStyles.color,
             fontFamily: panelStyles.fontFamily || bodyStyles.fontFamily,
+            chatTabs,
+            activeChatTitle,
             themeVars,
             scrollInfo: {
                 scrollTop: scrollTarget.scrollTop || 0,
@@ -2524,25 +2625,45 @@ async function getChatHistory(cdp) {
     await clickAtPoint(cdp, opener.button.x, opener.button.y);
     await new Promise(resolve => setTimeout(resolve, 500));
 
-    return await evaluateCursor(cdp, `
+    const result = await evaluateCursor(cdp, `
         const menu = __cr.findHistoryMenu();
         const chats = __cr.getHistoryItems().slice(0, 50).map(item => ({
             title: item.title,
             date: 'Recent'
         }));
+        const activeTitle = __cr.getActiveChatTitle() || '';
 
         return {
             success: true,
             chats,
+            activeTitle,
             debug: {
                 menuFound: !!menu,
                 menuText: menu ? __cr.textOf(menu).slice(0, 200) : '',
-                itemCount: chats.length
+                itemCount: chats.length,
+                activeTitle
             }
         };
     `, {
         accept: (value) => value && typeof value === 'object'
     });
+
+    const titlesMatch = (left, right) => {
+        const a = String(left || '').trim().toLowerCase();
+        const b = String(right || '').trim().toLowerCase();
+        if (!a || !b) return false;
+        return a === b || a.includes(b) || b.includes(a);
+    };
+
+    if (result?.success && Array.isArray(result.chats) && result.activeTitle) {
+        const activeIndex = result.chats.findIndex(chat => titlesMatch(chat?.title, result.activeTitle));
+        if (activeIndex > 0) {
+            const [activeChat] = result.chats.splice(activeIndex, 1);
+            result.chats.unshift(activeChat);
+        }
+    }
+
+    return result;
 }
 
 async function selectChat(cdp, chatTitle) {
@@ -2683,6 +2804,7 @@ async function hasChatOpen(cdp) {
 // Get App State (Mode & Model)
 async function getAppState(cdp) {
     const result = await evaluateCursor(cdp, `
+        const chatTabs = __cr.getChatTabs();
         return {
             mode: __cr.getModeText() || 'Unknown',
             model: __cr.getModelText() || 'Unknown',
@@ -2690,7 +2812,9 @@ async function getAppState(cdp) {
             composerStatus: __cr.getComposerStatus() || 'idle',
             hasChat: !!__cr.findPanel(),
             hasMessages: __cr.collectMessageNodes().length > 0,
-            editorFound: !!__cr.findEditor()
+            editorFound: !!__cr.findEditor(),
+            activeChatTitle: __cr.getActiveChatTitle() || '',
+            chatTabs
         };
     `, {
         accept: (value) => value && typeof value === 'object'
@@ -2792,7 +2916,11 @@ async function startPolling(wss) {
         try {
             const snapshot = await captureSnapshot(cdpConnection);
             if (snapshot && !snapshot.error) {
-                const hash = hashString(snapshot.html);
+                const hash = hashString(JSON.stringify({
+                    html: snapshot.html,
+                    activeChatTitle: snapshot.activeChatTitle || '',
+                    chatTabs: snapshot.chatTabs || []
+                }));
 
                 // Only update if content changed
                 if (hash !== lastSnapshotHash) {
