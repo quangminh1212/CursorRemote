@@ -147,6 +147,8 @@ const __cr = (() => {
     };
 
     const textOf = (el) => ((el && (el.innerText || el.textContent)) || '').replace(/\s+/g, ' ').trim();
+    const normalizeText = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const escapeRegExp = (value) => String(value || '').replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
 
     const queryAllVisible = (selector, root = document) => Array.from(root.querySelectorAll(selector)).filter(isVisible);
 
@@ -342,6 +344,168 @@ const __cr = (() => {
         return texts;
     };
 
+    const findModelSearchInput = (root = document) => Array.from(root.querySelectorAll('input, textarea, [role="textbox"]')).find(el => {
+        if (!isVisible(el)) return false;
+        const placeholder = normalizeText(el.getAttribute('placeholder') || el.getAttribute('aria-label') || '');
+        return /search/i.test(placeholder);
+    }) || null;
+
+    const findModelMenuRoot = () => {
+        const searchInput = findModelSearchInput(document);
+        if (searchInput) {
+            const nearestContainer = searchInput.closest('[role="menu"], [role="dialog"], [role="listbox"], .ui-menu__content, .context-view, [data-radix-popper-content-wrapper]');
+            if (nearestContainer && isVisible(nearestContainer)) {
+                return nearestContainer;
+            }
+
+            const owningContainer = findMenuContainers().find(container => container.contains(searchInput));
+            if (owningContainer) {
+                return owningContainer;
+            }
+        }
+
+        return findMenuContainers().find(container => !!findModelSearchInput(container)) ||
+            findMenuContainers()[0] ||
+            null;
+    };
+
+    const getSwitchState = (el) => {
+        const switchEl =
+            el?.querySelector?.('[role="switch"], input[type="checkbox"], [aria-checked], [aria-pressed]') ||
+            el?.closest?.('[role="switch"], [aria-checked], [aria-pressed]');
+
+        if (!switchEl) return false;
+
+        const ariaChecked = switchEl.getAttribute?.('aria-checked');
+        if (ariaChecked != null) return ariaChecked === 'true';
+
+        const ariaPressed = switchEl.getAttribute?.('aria-pressed');
+        if (ariaPressed != null) return ariaPressed === 'true';
+
+        if (typeof switchEl.checked === 'boolean') {
+            return !!switchEl.checked;
+        }
+
+        const cls = getClassName(switchEl).toLowerCase();
+        return cls.includes('checked') || cls.includes('enabled') || cls.includes('active') || cls.includes('on');
+    };
+
+    const setInputValue = (input, value) => {
+        if (!input) return false;
+
+        input.focus?.();
+        try { input.select?.(); } catch (e) { /* ignore */ }
+
+        const inputSetter = typeof HTMLInputElement !== 'undefined'
+            ? Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+            : null;
+        const textAreaSetter = typeof HTMLTextAreaElement !== 'undefined'
+            ? Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+            : null;
+
+        if (typeof HTMLTextAreaElement !== 'undefined' && input instanceof HTMLTextAreaElement && textAreaSetter) {
+            textAreaSetter.call(input, value);
+        } else if (typeof HTMLInputElement !== 'undefined' && input instanceof HTMLInputElement && inputSetter) {
+            inputSetter.call(input, value);
+        } else {
+            input.value = value;
+        }
+
+        try { input.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) { /* ignore */ }
+        try { input.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) { /* ignore */ }
+        return true;
+    };
+
+    const getModelMenuRows = (root = findModelMenuRoot()) => {
+        if (!root) return [];
+
+        return Array.from(root.querySelectorAll('button, [role="menuitem"], [role="option"], [role="button"], label, a, div'))
+            .filter(isVisible)
+            .map(resolveTrigger)
+            .filter((el, index, arr) => el && root.contains(el) && arr.indexOf(el) === index)
+            .map(el => ({
+                element: el,
+                text: normalizeText(textOf(el)),
+                rect: el.getBoundingClientRect()
+            }))
+            .filter(item => item.text && item.rect.width > 90 && item.rect.height >= 18 && item.rect.height <= 96)
+            .sort((a, b) => {
+                const yDiff = a.rect.top - b.rect.top;
+                return Math.abs(yDiff) > 1 ? yDiff : a.rect.left - b.rect.left;
+            });
+    };
+
+    const findModelToggleRow = (label, root = findModelMenuRoot()) => {
+        const matcher = new RegExp('^' + escapeRegExp(label) + '(?:\\\\b|\\\\s)', 'i');
+        return getModelMenuRows(root).find(row => matcher.test(row.text))?.element || null;
+    };
+
+    const getModelMenuState = () => {
+        const root = findModelMenuRoot();
+        const current = getModelText() || 'Unknown';
+        if (!root) {
+            return {
+                current,
+                searchPlaceholder: '',
+                toggles: [],
+                options: current && current !== 'Unknown' && !/^auto$/i.test(current) ? [current] : [],
+                footerLabel: ''
+            };
+        }
+
+        const searchInput = findModelSearchInput(root);
+        const searchPlaceholder = normalizeText(searchInput?.getAttribute('placeholder') || searchInput?.getAttribute('aria-label') || '');
+        const rows = getModelMenuRows(root);
+        const toggleDefs = [
+            { key: 'auto', label: 'Auto', matcher: /^auto(?:\b|\s)/i },
+            { key: 'max-mode', label: 'MAX Mode', matcher: /^max mode(?:\b|\s)/i },
+            { key: 'multi-model', label: 'Use Multiple Models', matcher: /^use multiple models?(?:\b|\s)/i }
+        ];
+
+        const toggles = toggleDefs.map(def => {
+            const row = rows.find(item => def.matcher.test(item.text));
+            if (!row) return null;
+
+            const description = normalizeText(row.text.replace(new RegExp('^' + escapeRegExp(def.label) + '\\\\s*', 'i'), ''));
+            return {
+                key: def.key,
+                label: def.label,
+                description,
+                enabled: getSwitchState(row.element)
+            };
+        }).filter(Boolean);
+
+        const blockedMatchers = [
+            /^search models?$/i,
+            /^add models?$/i,
+            ...toggleDefs.map(def => def.matcher)
+        ];
+        const seen = new Set();
+        const options = [];
+
+        for (const row of rows) {
+            const title = row.text;
+            const key = title.toLowerCase();
+            if (!title || title.length > 80) continue;
+            if (blockedMatchers.some(matcher => matcher.test(title))) continue;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            options.push(title);
+        }
+
+        if (!options.length && current && current !== 'Unknown' && !/^auto$/i.test(current)) {
+            options.push(current);
+        }
+
+        return {
+            current,
+            searchPlaceholder,
+            toggles,
+            options,
+            footerLabel: rows.some(row => /^add models?$/i.test(row.text)) ? 'Add Models' : ''
+        };
+    };
+
     const getHistoryItems = () => {
         const menu = findHistoryMenu();
         if (!menu) return [];
@@ -479,6 +643,13 @@ const __cr = (() => {
         findMenuContainers,
         getMenuItems,
         getMenuItemTexts,
+        findModelSearchInput,
+        findModelMenuRoot,
+        getSwitchState,
+        setInputValue,
+        getModelMenuRows,
+        findModelToggleRow,
+        getModelMenuState,
         getHistoryItems,
         findSendButton,
         findStopButton,
@@ -1456,18 +1627,32 @@ async function injectFileViaInput(cdp, filePath) {
     return { success: false, error: 'No file input found in IDE' };
 }
 
+function getModeRequestCandidates(mode) {
+    const normalized = String(mode || '').trim();
+    if (!normalized) return [];
+
+    const lower = normalized.toLowerCase();
+    if (lower === 'agent' || lower === 'fast') return ['Agent', 'Fast'];
+    if (lower === 'plan' || lower === 'planning') return ['Plan', 'Planning'];
+    if (lower === 'debug' || lower === 'manual') return ['Debug', 'Manual'];
+    if (lower === 'ask') return ['Ask'];
+    return [normalized];
+}
+
 // Set functionality mode (Fast vs Planning)
 async function setMode(cdp, mode) {
     const targetMode = String(mode || '').trim();
     if (!targetMode) return { error: 'Invalid mode' };
+    const requestedCandidates = getModeRequestCandidates(targetMode);
 
     return await evaluateCursor(cdp, `
         const requestedMode = ${JSON.stringify(targetMode)};
+        const requestedCandidates = ${JSON.stringify(requestedCandidates)};
         const modeButton = __cr.findModeButton();
         if (!modeButton) return { error: 'mode_button_not_found' };
 
         const currentMode = __cr.getModeText();
-        if (currentMode && currentMode.toLowerCase() === requestedMode.toLowerCase()) {
+        if (currentMode && requestedCandidates.some(candidate => currentMode.toLowerCase() === candidate.toLowerCase())) {
             return { success: true, alreadySet: true, currentMode };
         }
 
@@ -1476,10 +1661,14 @@ async function setMode(cdp, mode) {
         await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
 
         let menus = __cr.findMenuContainers();
-        const matchingMenus = menus.filter(menu => __cr.textOf(menu).toLowerCase().includes(requestedMode.toLowerCase()));
+        const matchingMenus = menus.filter(menu => requestedCandidates.some(candidate => __cr.textOf(menu).toLowerCase().includes(candidate.toLowerCase())));
         if (matchingMenus.length) menus = matchingMenus;
 
-        const option = __cr.findDropdownMenuItem(requestedMode, menus);
+        let option = null;
+        for (const candidate of requestedCandidates) {
+            option = __cr.findDropdownMenuItem(candidate, menus);
+            if (option) break;
+        }
         const available = __cr.getMenuItemTexts(menus).slice(0, 30);
 
         if (!option) {
@@ -1614,12 +1803,26 @@ async function setModel(cdp, modelName) {
         await new Promise(r => setTimeout(r, 250));
         await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
 
-        let menus = __cr.findMenuContainers();
-        const matchingMenus = menus.filter(menu => __cr.textOf(menu).toLowerCase().includes(requestedModel.toLowerCase()));
-        if (matchingMenus.length) menus = matchingMenus;
+        let rootMenu = __cr.findModelMenuRoot();
+        let menus = rootMenu ? [rootMenu] : __cr.findMenuContainers();
+        let option = __cr.findDropdownMenuItem(requestedModel, menus);
 
-        const option = __cr.findDropdownMenuItem(requestedModel, menus);
-        const available = __cr.getMenuItemTexts(menus).slice(0, 40);
+        if (!option) {
+            const searchInput = __cr.findModelSearchInput(rootMenu || document);
+            if (searchInput) {
+                __cr.setInputValue(searchInput, requestedModel);
+                await new Promise(r => setTimeout(r, 180));
+                await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+                rootMenu = __cr.findModelMenuRoot();
+                menus = rootMenu ? [rootMenu] : __cr.findMenuContainers();
+                option = __cr.findDropdownMenuItem(requestedModel, menus);
+            }
+        }
+
+        const menuState = __cr.getModelMenuState();
+        const available = Array.isArray(menuState.options) && menuState.options.length
+            ? menuState.options.slice(0, 80)
+            : __cr.getMenuItemTexts(menus).slice(0, 40);
 
         if (!option) {
             document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
@@ -1634,6 +1837,59 @@ async function setModel(cdp, modelName) {
             success: true,
             currentModel: __cr.getModelText() || requestedModel,
             available
+        };
+    `, {
+        accept: (value) => value && typeof value === 'object'
+    });
+}
+
+async function setModelToggle(cdp, toggleKey, enabled) {
+    const requestedToggle = String(toggleKey || '').trim().toLowerCase();
+    if (!requestedToggle) return { error: 'Invalid toggle' };
+
+    const toggleLabel = ({
+        auto: 'Auto',
+        'max-mode': 'MAX Mode',
+        'multi-model': 'Use Multiple Models'
+    })[requestedToggle] || toggleKey;
+
+    return await evaluateCursor(cdp, `
+        const requestedToggle = ${JSON.stringify(toggleLabel)};
+        const desiredEnabled = ${enabled === undefined ? 'null' : JSON.stringify(!!enabled)};
+        const modelButton = __cr.findModelButton();
+        if (!modelButton) return { error: 'model_button_not_found' };
+
+        __cr.click(modelButton);
+        await new Promise(r => setTimeout(r, 250));
+        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+        const toggleRow = __cr.findModelToggleRow(requestedToggle);
+        const menuState = __cr.getModelMenuState();
+        if (!toggleRow) {
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+            document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', bubbles: true }));
+            return {
+                error: 'model_toggle_not_found',
+                requestedToggle,
+                toggles: menuState.toggles || []
+            };
+        }
+
+        const wasEnabled = __cr.getSwitchState(toggleRow);
+        if (desiredEnabled === null || wasEnabled !== desiredEnabled) {
+            __cr.click(toggleRow);
+            await new Promise(r => setTimeout(r, 220));
+            await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+        }
+
+        const updatedState = __cr.getModelMenuState();
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+        document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', bubbles: true }));
+
+        return {
+            success: true,
+            toggles: updatedState.toggles || [],
+            currentModel: updatedState.current || __cr.getModelText() || 'Unknown'
         };
     `, {
         accept: (value) => value && typeof value === 'object'
@@ -1661,58 +1917,29 @@ async function getDropdownOptions(cdp, kind) {
         let autoEnabled = false;
         let autoLabel = 'Auto';
         let autoDescription = '';
+        let toggles = [];
+        let footerLabel = '';
 
         if (kind === 'model') {
-            const searchInput = Array.from(document.querySelectorAll('input, textarea, [role="textbox"]')).find(el => {
-                if (!__cr.isVisible(el)) return false;
-                const placeholder = normalizeText(el.getAttribute('placeholder') || el.getAttribute('aria-label') || '');
-                return /search/i.test(placeholder);
-            });
-            searchPlaceholder = searchInput
-                ? normalizeText(searchInput.getAttribute('placeholder') || searchInput.getAttribute('aria-label') || '')
-                : '';
+            const modelMenuState = __cr.getModelMenuState();
+            searchPlaceholder = modelMenuState.searchPlaceholder || '';
+            toggles = Array.isArray(modelMenuState.toggles) ? modelMenuState.toggles : [];
+            footerLabel = modelMenuState.footerLabel || '';
 
-            const autoCandidate = Array.from(document.querySelectorAll('button, [role="button"], [role="menuitem"], [role="option"], label, div')).find(el => {
-                if (!__cr.isVisible(el)) return false;
-                const text = normalizeText(__cr.textOf(el));
-                return /^auto\\b/i.test(text) && /recommended|balanced|quality|speed|task/i.test(text);
-            });
-
-            if (autoCandidate) {
-                const autoText = normalizeText(__cr.textOf(autoCandidate));
+            const autoToggle = toggles.find(toggle => toggle.key === 'auto' || /^auto$/i.test(toggle.label || ''));
+            if (autoToggle) {
                 autoAvailable = true;
-                autoEnabled = /auto/i.test(current);
-                autoLabel = 'Auto';
-                autoDescription = normalizeText(autoText.replace(/^auto\\b/i, ''));
-
-                const switchEl =
-                    autoCandidate.querySelector('[role="switch"], input[type="checkbox"], [aria-checked], [aria-pressed]') ||
-                    autoCandidate.closest('[role="switch"], [aria-checked], [aria-pressed]');
-                if (switchEl) {
-                    const ariaChecked = switchEl.getAttribute?.('aria-checked');
-                    const ariaPressed = switchEl.getAttribute?.('aria-pressed');
-                    if (ariaChecked != null) autoEnabled = ariaChecked === 'true';
-                    else if (ariaPressed != null) autoEnabled = ariaPressed === 'true';
-                    else if (typeof switchEl.checked === 'boolean') autoEnabled = !!switchEl.checked;
-                }
+                autoEnabled = !!autoToggle.enabled;
+                autoLabel = autoToggle.label || 'Auto';
+                autoDescription = autoToggle.description || '';
             } else if (/auto/i.test(current)) {
                 autoAvailable = true;
                 autoEnabled = true;
                 autoDescription = 'Balanced quality and speed, recommended for most tasks';
             }
 
-            const rawOptions = __cr.getMenuItemTexts(menus)
-                .map(normalizeText)
-                .filter(text => text && text.length <= 100)
-                .filter(text => !/^search models?$/i.test(text))
-                .filter(text => !/^search$/i.test(text))
-                .filter(text => !/^auto\\b/i.test(text))
-                .filter(text => !/balanced quality and speed/i.test(text))
-                .filter(text => !/recommended for most tasks/i.test(text))
-                .slice(0, 80);
-
-            normalizedOptions = rawOptions.length
-                ? Array.from(new Set(rawOptions))
+            normalizedOptions = Array.isArray(modelMenuState.options) && modelMenuState.options.length
+                ? modelMenuState.options.slice(0, 80)
                 : (current && current !== 'Unknown' && !/auto/i.test(current) ? [current] : []);
         } else {
             let scopedMenus = menus;
@@ -1737,10 +1964,12 @@ async function getDropdownOptions(cdp, kind) {
             current,
             options: normalizedOptions,
             searchPlaceholder,
+            toggles,
             autoAvailable,
             autoEnabled,
             autoLabel,
-            autoDescription
+            autoDescription,
+            footerLabel
         };
     `, {
         accept: (value) => value && typeof value === 'object'
@@ -2319,6 +2548,13 @@ async function createServer() {
         const { model } = req.body;
         if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
         const result = await setModel(cdpConnection, model);
+        res.json(result);
+    });
+
+    app.post('/set-model-toggle', async (req, res) => {
+        const { key, enabled } = req.body || {};
+        if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
+        const result = await setModelToggle(cdpConnection, key, enabled);
         res.json(result);
     });
 
