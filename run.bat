@@ -327,7 +327,7 @@ exit /b !TAURI_EXIT!
 set "RESET_SERVER_LOG=0"
 if /i "!SERVER_MODE!"=="dev" (
     set "RESET_SERVER_LOG=1"
-    set "SERVER_COMMAND=npx nodemon --watch server.js --watch public --watch generate_ssl.js --ext js,html,css,json --ignore log.txt --ignore log.old.txt --ignore debug.log --ignore node_modules --signal SIGTERM --delay 2 server.js"
+    set "SERVER_COMMAND=powershell -NoProfile -ExecutionPolicy Bypass -File ""%CD%\watch-server.ps1"""
 ) else (
     set "SERVER_COMMAND=node server.js"
 )
@@ -492,7 +492,7 @@ exit /b 1
 :stop_workspace_servers
 echo       Stopping existing Cursor Remote server processes for this workspace...
 set "FOUND_WORKSPACE_PROCESS=0"
-for /f "usebackq delims=" %%p in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$workspace = [regex]::Escape((Get-Location).Path); Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -match $workspace -and ($_.CommandLine -match 'server\.js' -or $_.CommandLine -match 'nodemon') } | Select-Object -ExpandProperty ProcessId -Unique"`) do (
+for /f "usebackq delims=" %%p in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$workspace = [regex]::Escape((Get-Location).Path); Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and ((($_.CommandLine -match $workspace) -and ($_.CommandLine -match 'server\.js' -or $_.CommandLine -match 'nodemon')) -or $_.CommandLine -match 'watch-server\.ps1') } | Select-Object -ExpandProperty ProcessId -Unique"`) do (
     if not "%%p"=="" (
         set "FOUND_WORKSPACE_PROCESS=1"
         echo         - PID %%p
