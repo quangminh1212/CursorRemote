@@ -26,6 +26,7 @@ set "MODE=auto"
 set "SERVER_MODE=stable"
 set "OPEN_BROWSER=1"
 set "VERIFY_STARTUP=1"
+set "KEEP_HOST_WINDOW=auto"
 set "REQUESTED_PORT="
 set "CR_VISIBLE_CURSOR=1"
 set "CR_TERMINAL_LOG=0"
@@ -40,6 +41,8 @@ if /i "%~1"=="--hot" set "SERVER_MODE=dev"
 if /i "%~1"=="--watch" set "SERVER_MODE=dev"
 if /i "%~1"=="--no-open" set "OPEN_BROWSER=0"
 if /i "%~1"=="--no-verify" set "VERIFY_STARTUP=0"
+if /i "%~1"=="--detach" set "KEEP_HOST_WINDOW=0"
+if /i "%~1"=="--hold" set "KEEP_HOST_WINDOW=1"
 if /i "%~1"=="--port" (
     set "NEXT_ARG=%~2"
     if defined NEXT_ARG if not "!NEXT_ARG:~0,1!"=="-" (
@@ -60,6 +63,18 @@ shift
 goto parse_args
 
 :args_done
+if /i "!KEEP_HOST_WINDOW!"=="auto" (
+    if "!CAN_PAUSE!"=="1" (
+        set "KEEP_HOST_WINDOW=1"
+    ) else (
+        set "KEEP_HOST_WINDOW=0"
+    )
+)
+if "!KEEP_HOST_WINDOW!"=="1" (
+    set "CONSOLE_MODE=attached"
+) else (
+    set "CONSOLE_MODE=detached"
+)
 echo ============================================
 echo  Cursor Remote Launcher
 echo ============================================
@@ -338,7 +353,7 @@ echo  Server:     !BROWSER_URL!
 echo  Runtime:    !SERVER_MODE!
 echo  Open UI:    !OPEN_BROWSER!
 echo  Verify:     !VERIFY_STARTUP!
-echo  Console:    host only
+echo  Console:    !CONSOLE_MODE!
 echo  Logs:       log.txt
 echo ============================================
 echo.
@@ -374,6 +389,13 @@ if defined MOBILE_URL call :log "Mobile host ready: !MOBILE_URL!"
 if "!CAN_CLEAR_SCREEN!"=="1" cls >nul 2>&1
 echo Host: !BROWSER_URL!
 if defined MOBILE_URL echo Mobile: !MOBILE_URL!
+if "!KEEP_HOST_WINDOW!"=="1" (
+    echo.
+    echo       Launcher attached to host on port !PORT!.
+    echo       Press Ctrl+C to close this launcher window.
+    call :log "Launcher attached to host on port !PORT!"
+    call :wait_for_host_stop
+)
 exit /b 0
 
 :verify_server_startup
@@ -605,4 +627,20 @@ exit /b 0
 
 :pause_if_interactive
 if "!CAN_PAUSE!"=="1" pause
+exit /b 0
+
+:wait_for_host_stop
+set "HOST_STOP_MISSES=0"
+:wait_for_host_stop_loop
+timeout /t 2 /nobreak >nul 2>&1
+call :is_port_free !PORT!
+if "!PORT_FREE!"=="0" (
+    set "HOST_STOP_MISSES=0"
+    goto wait_for_host_stop_loop
+)
+set /a HOST_STOP_MISSES+=1
+if !HOST_STOP_MISSES! LSS 3 goto wait_for_host_stop_loop
+echo.
+echo       Host on port !PORT! is no longer running. Closing launcher.
+call :log "Host on port !PORT! stopped; launcher exiting"
 exit /b 0
