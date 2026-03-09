@@ -2629,7 +2629,6 @@ body.home-screen {
     background: #000000;
 }
 
-body.home-screen .app-chrome,
 body.home-screen .ssl-banner,
 body.home-screen .home-hero,
 body.home-screen .home-context,
@@ -2639,35 +2638,146 @@ body.home-screen .status-dock {
     display: none !important;
 }
 
-body.home-screen .header {
-    min-height: 30px;
-    padding: 0 8px 0 6px;
-    background: #121315;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+body.home-screen .app-chrome {
+    position: relative;
+    z-index: 130;
+    display: flex !important;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-height: 18px;
+    padding: 0 14px 0 12px;
+    background: #000000;
+    border-bottom: none;
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
 }
 
+body.home-screen .app-chrome::before {
+    content: '';
+    position: absolute;
+    left: 18px;
+    top: 1px;
+    bottom: -31px;
+    width: 1px;
+    background: rgba(255, 255, 255, 0.24);
+    pointer-events: none;
+}
+
+body.home-screen .app-chrome-left,
+body.home-screen .app-chrome-right {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+
+body.home-screen .app-chrome-left {
+    flex: 1 1 auto;
+}
+
+body.home-screen .app-chrome-center,
+body.home-screen .header-logo {
+    display: none !important;
+}
+
+body.home-screen .app-brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0;
+    min-width: 0;
+}
+
+body.home-screen .app-brand-title {
+    display: inline-block !important;
+    max-width: 90px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: rgba(255, 255, 255, 0.84);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+    line-height: 1;
+}
+
+body.home-screen .app-chrome-right {
+    flex: 0 0 auto;
+    gap: 7px;
+    color: rgba(255, 255, 255, 0.84);
+}
+
+body.home-screen .app-chrome-right::before,
+body.home-screen .app-chrome-right::after,
+body.home-screen .app-chip::before {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 12px;
+    height: 12px;
+    font-size: 10px;
+    line-height: 1;
+}
+
+body.home-screen .app-chrome-right::before {
+    content: '\25a2';
+}
+
+body.home-screen .app-chrome-right::after {
+    content: '\2699';
+    font-size: 11px;
+}
+
+body.home-screen .app-chip {
+    min-height: 12px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: transparent;
+    font-size: 0;
+}
+
+body.home-screen .app-chip:first-child::before {
+    content: '\25ad';
+}
+
+body.home-screen .app-chip:last-child::before {
+    content: '\25a1';
+}
+
+body.home-screen .header {
+    position: relative;
+    min-height: 31px;
+    padding: 0 8px 0 22px;
+    background: #000000;
+    border-bottom: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+}
+
+body.home-screen .header::before {
+    display: none;
+}
+
 body.home-screen .header-left {
     display: flex;
-    align-items: stretch;
-    gap: 2px;
+    align-items: center;
+    gap: 10px;
     min-width: 0;
 }
 
 body.home-screen .new-chat-btn {
     min-width: 0;
     height: 28px;
-    padding: 0 12px;
+    padding: 0 18px 0 15px;
     gap: 0;
     border: none;
-    border-radius: 6px 6px 0 0;
-    background: #35393f;
+    border-radius: 5px;
+    background: #36383d;
     box-shadow: none;
     color: #f3f4f6;
     font-size: 13px;
     font-weight: 600;
-    margin-bottom: -1px;
+    margin-bottom: 0;
 }
 
 body.home-screen .new-chat-btn svg {
@@ -2683,7 +2793,7 @@ body.home-screen .header-summary {
     display: inline-flex !important;
     align-items: center;
     height: 28px;
-    padding: 0 10px;
+    padding: 0;
     min-width: 0;
 }
 
@@ -2694,13 +2804,13 @@ body.home-screen .header-summary-meta {
 
 body.home-screen .header-summary-title {
     max-width: none;
-    color: rgba(255, 255, 255, 0.68);
+    color: rgba(255, 255, 255, 0.72);
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 500;
 }
 
 body.home-screen .header-controls {
-    gap: 1px;
+    gap: 6px;
 }
 
 body.home-screen #refreshBtn {
@@ -2722,24 +2832,24 @@ body.home-screen #fullscreenBtn {
 body.home-screen .header-icon-btn,
 body.home-screen .refresh-btn,
 body.home-screen .settings-btn {
-    width: 24px;
-    height: 24px;
+    width: 18px;
+    height: 18px;
     padding: 0;
-    border-radius: 6px;
-    color: #d8dbe0;
+    border-radius: 4px;
+    color: #eceff2;
 }
 
 body.home-screen .header-icon-btn:hover,
 body.home-screen .refresh-btn:hover,
 body.home-screen .settings-btn:hover {
-    background: rgba(255, 255, 255, 0.06);
+    background: rgba(255, 255, 255, 0.04);
     color: #ffffff;
 }
 
 body.home-screen #historyQuickBtn svg,
 body.home-screen #settingsBtn svg {
-    width: 14px;
-    height: 14px;
+    width: 15px;
+    height: 15px;
 }
 
 body.home-screen #refreshBtn svg,
@@ -2756,14 +2866,14 @@ body.home-screen #fullscreenBtn::before {
 
 body.home-screen #refreshBtn::before {
     content: '+';
-    font-size: 22px;
-    margin-top: -2px;
+    font-size: 18px;
+    margin-top: -1px;
 }
 
 body.home-screen #fullscreenBtn::before {
     content: '\00d7';
     font-size: 18px;
-    margin-top: -1px;
+    margin-top: -2px;
 }
 
 body.home-screen .chat-container {
@@ -2969,13 +3079,126 @@ body.home-screen #modelBtn svg {
 }
 
 body.home-screen #modeMenu {
-    min-width: 218px;
-    max-width: 218px;
+    min-width: 214px;
+    max-width: 214px;
     padding: 4px;
     background: #444446;
     border: 1px solid rgba(255, 255, 255, 0.11);
-    border-radius: 11px;
+    border-radius: 10px;
     box-shadow: 0 14px 28px rgba(0, 0, 0, 0.42);
+}
+
+body.home-screen #modelMenu.auto-compact-menu {
+    min-width: 236px;
+    max-width: 236px;
+    padding: 0;
+    background: #47474a;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 9px;
+    box-shadow: 0 14px 28px rgba(0, 0, 0, 0.42);
+}
+
+body.home-screen #modelMenu.auto-compact-menu .model-menu-panel {
+    min-width: 0;
+    padding: 6px 8px 8px;
+}
+
+body.home-screen #modelMenu.auto-compact-menu .model-search-wrap {
+    padding: 0 0 8px;
+}
+
+body.home-screen #modelMenu.auto-compact-menu .model-search-input {
+    height: 31px;
+    padding: 0 10px;
+    border-color: rgba(255, 255, 255, 0.04);
+    border-radius: 7px;
+    background: #3b3c40;
+    color: #eceef1;
+}
+
+body.home-screen #modelMenu.auto-compact-menu .model-search-input::placeholder {
+    color: #a5a7ab;
+}
+
+body.home-screen #modelMenu.auto-compact-menu .model-menu-content {
+    display: flex;
+    flex-direction: column;
+}
+
+body.home-screen #modelMenu.auto-compact-menu .model-toggle-list {
+    padding: 0;
+}
+
+body.home-screen #modelMenu.auto-compact-menu .model-toggle-row {
+    padding: 2px 2px 4px 2px;
+    border-radius: 7px;
+    background: transparent;
+}
+
+body.home-screen #modelMenu.auto-compact-menu .model-toggle-row:hover,
+body.home-screen #modelMenu.auto-compact-menu .model-toggle-row.active {
+    background: transparent;
+}
+
+body.home-screen #modelMenu.auto-compact-menu .model-toggle-copy {
+    gap: 3px;
+}
+
+body.home-screen #modelMenu.auto-compact-menu .model-toggle-title {
+    font-size: 15px;
+    font-weight: 500;
+    color: #f3f4f6;
+}
+
+body.home-screen #modelMenu.auto-compact-menu .model-toggle-desc {
+    max-width: 148px;
+    color: #b9bcc1;
+    font-size: 11.8px;
+    line-height: 1.18;
+}
+
+body.home-screen #modelMenu.auto-compact-menu .model-toggle-switch {
+    width: 31px;
+    height: 18px;
+    background: rgba(255, 255, 255, 0.16);
+}
+
+body.home-screen #modelMenu.auto-compact-menu .model-toggle-switch.is-on {
+    background: #7eca72;
+}
+
+body.home-screen #modelMenu.auto-compact-menu .model-toggle-knob {
+    width: 14px;
+    height: 14px;
+}
+
+body.home-screen #modelMenu.auto-compact-menu .model-toggle-switch.is-on .model-toggle-knob {
+    transform: translateX(13px);
+}
+
+body.home-screen #modelMenu.auto-compact-menu .model-menu-divider {
+    margin: 8px 0 6px;
+    background: rgba(255, 255, 255, 0.08);
+}
+
+body.home-screen #modelMenu.auto-compact-menu .model-options-list {
+    padding: 0;
+    gap: 1px;
+    max-height: 196px;
+}
+
+body.home-screen #modelMenu.auto-compact-menu .dropdown-option.model-option {
+    padding: 8px 2px 8px 4px;
+    border-radius: 7px;
+    background: transparent;
+}
+
+body.home-screen #modelMenu.auto-compact-menu .dropdown-option.model-option.active {
+    background: rgba(43, 47, 52, 0.68);
+}
+
+body.home-screen #modelMenu.auto-compact-menu .model-option-name {
+    color: #f2f3f5;
 }
 
 body.home-screen #modeMenu .dropdown-title {
@@ -2993,7 +3216,7 @@ body.home-screen .mode-dropdown-option {
     align-items: center;
     justify-content: space-between;
     gap: 14px;
-    min-height: 28px;
+    min-height: 29px;
     margin: 0;
     padding: 0 10px;
     border-radius: 7px;
@@ -3010,7 +3233,7 @@ body.home-screen .mode-dropdown-option:hover {
 }
 
 body.home-screen .mode-dropdown-option.active {
-    background: #2b2f33;
+    background: transparent;
 }
 
 body.home-screen .mode-dropdown-main {
@@ -3036,7 +3259,7 @@ body.home-screen .mode-dropdown-icon svg {
 }
 
 body.home-screen .mode-dropdown-label {
-    font-size: 13px;
+    font-size: 12.8px;
     font-weight: 500;
     line-height: 1;
     color: #f2f3f5;
@@ -3045,8 +3268,8 @@ body.home-screen .mode-dropdown-label {
 body.home-screen .mode-dropdown-check {
     min-width: 14px;
     text-align: right;
-    font-size: 14px;
-    color: rgba(255, 255, 255, 0.92);
+    font-size: 13px;
+    color: rgba(255, 255, 255, 0.82);
 }
 
 body.home-screen #sendBtn {
