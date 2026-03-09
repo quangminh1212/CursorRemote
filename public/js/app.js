@@ -412,9 +412,7 @@ const MODEL_FALLBACK_OPTIONS = [
     { name: 'GPT-5.4' },
     { name: 'GPT-5.3 Codex' },
     { name: 'Sonnet 4.6' },
-    { name: 'Opus 4.6' },
-    { name: 'Gemini 3 Flash' },
-    { name: 'gpt-4' }
+    { name: 'Opus 4.6' }
 ];
 const MODEL_FALLBACK_TOGGLES = [
     { key: 'auto', label: 'Auto', description: 'Balanced quality and speed, recommended for most tasks', enabled: false },
@@ -521,7 +519,7 @@ function getModelDropdownFallbackState(overrides = {}) {
             enabled: toggle.key === 'auto' ? fallbackAutoEnabled : toggle.enabled
         })),
         searchPlaceholder: 'Search models',
-        footerLabel: 'Add Models'
+        footerLabel: ''
     };
 }
 
@@ -682,10 +680,22 @@ function scheduleRender() {
     });
 }
 
+function isEmptyComposerSnapshot(data) {
+    const html = typeof data?.html === 'string' ? data.html : '';
+    if (!html) return false;
+    return html.includes('composer-bar editor empty');
+}
+
 // --- Core render function (used by both WS and HTTP paths) ---
 function renderSnapshot(data) {
     chatIsOpen = true;
     hasSnapshotLoaded = true;
+
+    if (isEmptyComposerSnapshot(data)) {
+        showEmptyState();
+        return;
+    }
+
     setHomeScreen(false);
 
     // Capture scroll state BEFORE updating content
@@ -1911,10 +1921,11 @@ async function checkChatStatus() {
     try {
         const res = await fetchWithAuth('/chat-status');
         const data = await res.json();
+        const shouldShowHomeScreen = !data.hasChat || !data.hasMessages;
 
         chatIsOpen = data.hasChat || data.editorFound;
 
-        if (!chatIsOpen) {
+        if (shouldShowHomeScreen) {
             showEmptyState();
         } else {
             setHomeScreen(false);
@@ -1926,6 +1937,7 @@ async function checkChatStatus() {
 
 // --- Empty State (No Chat Open) ---
 function showEmptyState() {
+    hasSnapshotLoaded = false;
     renderHomeShell();
     setHomeScreen(true);
     updateWorkspaceChrome({ snapshotReady: false });
@@ -2034,7 +2046,7 @@ function normalizeModelDropdownState(data = {}) {
 
         return { ...fallbackToggle };
     });
-    const options = Array.isArray(data.options) && data.options.length
+    const options = Array.isArray(data.options) && data.options.length >= 3
         ? data.options.filter((value) => value && !/^auto$/i.test(value))
         : fallback.options.filter((value) => value && !/^auto$/i.test(value));
 
@@ -2043,7 +2055,7 @@ function normalizeModelDropdownState(data = {}) {
         options,
         toggles,
         searchPlaceholder: data.searchPlaceholder || fallback.searchPlaceholder,
-        footerLabel: data.footerLabel || fallback.footerLabel
+        footerLabel: data.footerLabel || ''
     };
 }
 
@@ -2109,16 +2121,10 @@ function buildModelDropdownMenu(menu, state) {
     const searchInput = searchWrap.querySelector('.model-search-input');
     const renderMenuContent = (filterText = '') => {
         const normalizedFilter = String(filterText || '').trim();
-        const autoToggle = getAutoToggle(state);
-        const isHomeAutoMenu = document.body.classList.contains('home-screen') && /^auto$/i.test(state.current || '');
-        const isCompactAutoMenu = isHomeAutoMenu && !!autoToggle?.enabled && !normalizedFilter;
-        const visibleToggles = isHomeAutoMenu
-            ? (autoToggle ? [autoToggle] : [])
-            : (Array.isArray(state.toggles) ? state.toggles : []);
+        const visibleToggles = Array.isArray(state.toggles) ? state.toggles : [];
 
-        menu.classList.toggle('auto-compact-menu', isHomeAutoMenu);
-        panel.classList.toggle('home-auto-model-menu', isHomeAutoMenu);
-        panel.classList.toggle('compact-auto-menu', isCompactAutoMenu);
+        menu.classList.remove('auto-compact-menu');
+        panel.classList.remove('home-auto-model-menu', 'compact-auto-menu');
         contentWrap.innerHTML = '';
 
         if (visibleToggles.length) {
@@ -2143,8 +2149,6 @@ function buildModelDropdownMenu(menu, state) {
             contentWrap.appendChild(toggleList);
         }
 
-        if (isCompactAutoMenu) return;
-
         const listDivider = document.createElement('div');
         listDivider.className = 'model-menu-divider';
         contentWrap.appendChild(listDivider);
@@ -2154,7 +2158,7 @@ function buildModelDropdownMenu(menu, state) {
         contentWrap.appendChild(listEl);
         renderModelOptionsList(listEl, state, normalizedFilter);
 
-        if (!isHomeAutoMenu && state.footerLabel) {
+        if (state.footerLabel) {
             const bottomDivider = document.createElement('div');
             bottomDivider.className = 'model-menu-divider';
             contentWrap.appendChild(bottomDivider);
@@ -2242,9 +2246,10 @@ async function openModelDropdown() {
     try {
         const data = await fetchDropdownOptions('model');
         const hasStructuredModelMenu = !data.error && (
-            (Array.isArray(data.options) && data.options.length > 0) ||
-            (Array.isArray(data.toggles) && data.toggles.length > 0) ||
-            (data.current && data.current !== 'Unknown')
+            !!data.searchPlaceholder ||
+            !!data.footerLabel ||
+            (Array.isArray(data.toggles) && data.toggles.length >= 2) ||
+            (Array.isArray(data.options) && data.options.length >= 3)
         );
         const fallbackState = getModelDropdownFallbackState({
             current: currentModel && currentModel !== 'Unknown' ? currentModel : modelText.textContent
@@ -2362,7 +2367,7 @@ async function applyModelToggle(toggleKey, enabled) {
                 current: data.currentModel || currentModel,
                 options: lastModelDropdownState?.options || MODEL_FALLBACK_OPTIONS.map(item => item.name),
                 toggles: Array.isArray(data.toggles) && data.toggles.length ? data.toggles : lastModelDropdownState?.toggles,
-                footerLabel: lastModelDropdownState?.footerLabel || 'Add Models'
+                footerLabel: lastModelDropdownState?.footerLabel || ''
             });
             currentModel = normalized.current || currentModel;
             modelText.textContent = currentModel;
