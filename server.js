@@ -2929,18 +2929,21 @@ async function getDropdownOptions(cdp, kind) {
                 ? modelMenuState.options.slice(0, 80)
                 : (current && current !== 'Unknown' && !/auto/i.test(current) ? [current] : []);
         } else {
-            let scopedMenus = menus;
-            const matchingMenus = menus.filter(menu => __cr.textOf(menu).toLowerCase().includes(current.toLowerCase()));
-            if (matchingMenus.length) scopedMenus = matchingMenus;
-
-            const seen = new Set();
-            const modeItems = scopedMenus
+            const collectModeItems = (menuList) => menuList
                 .flatMap(menu => __cr.getMenuItems(menu))
                 .map(item => ({
                     title: normalizeText(item.title),
                     rect: item.element?.getBoundingClientRect?.() || null
                 }))
                 .filter(item => item.rect && /^(agent|plan|debug|ask|fast|planning|manual)$/i.test(item.title));
+
+            const matchingMenus = current
+                ? menus.filter(menu => __cr.textOf(menu).toLowerCase().includes(current.toLowerCase()))
+                : [];
+            const allModeItems = collectModeItems(menus);
+            const matchingModeItems = collectModeItems(matchingMenus);
+            const modeItems = matchingModeItems.length >= 2 ? matchingModeItems : allModeItems;
+            const seen = new Set();
 
             normalizedOptions = [];
             targets = [];
@@ -3530,6 +3533,10 @@ function hashString(str) {
 
 function normalizeUiStateText(value) {
     return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function escapeRegExp(value) {
+    return String(value || '').replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
 }
 
 function isPlausibleUiMode(value) {
