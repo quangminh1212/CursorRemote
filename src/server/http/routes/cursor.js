@@ -22,6 +22,7 @@ export function registerCursorRoutes(app, {
     hasChatOpen,
     injectFile,
     injectMessage,
+    launchcursorWithCDP,
     remoteScroll,
     selectChat,
     setMode,
@@ -166,6 +167,37 @@ export function registerCursorRoutes(app, {
         if (!cdpConnection) return;
         const result = await startNewChat(cdpConnection);
         res.json(result);
+    });
+
+    app.post('/restart-cursor-cdp', async (req, res) => {
+        if (typeof launchcursorWithCDP !== 'function') {
+            return res.status(501).json({ success: false, error: 'Restart Cursor action is unavailable' });
+        }
+
+        try {
+            const result = await launchcursorWithCDP();
+
+            if (result?.ready) {
+                return res.json({ success: true, ...result });
+            }
+
+            if (result?.attempted) {
+                return res.status(202).json({
+                    success: true,
+                    ...result,
+                    warning: 'Cursor was restarted, but CDP is not ready yet'
+                });
+            }
+
+            const errorMessage = result?.error
+                || (result?.reason === 'missing-executable'
+                    ? 'Cursor executable not found'
+                    : 'Failed to restart Cursor with CDP');
+
+            return res.status(503).json({ success: false, error: errorMessage, ...result });
+        } catch (error) {
+            return res.status(500).json({ success: false, error: error.message });
+        }
     });
 
     app.get('/chat-history', async (req, res) => {

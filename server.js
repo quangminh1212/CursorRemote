@@ -3050,6 +3050,7 @@ async function main() {
             injectMessage,
             isLocalRequest,
             killPortProcess,
+            launchcursorWithCDP,
             remoteScroll,
             sanitizeLogUrl,
             selectChat,
