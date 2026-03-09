@@ -1680,7 +1680,7 @@ body.agent-running .toolbar-stop-btn {
 }
 
 #modeText {
-    max-width: 38px;
+    max-width: none;
 }
 
 #modelText {
@@ -2749,9 +2749,9 @@ body.home-screen .header {
     display: flex;
     align-items: center;
     justify-content: flex-start;
-    gap: 18px;
+    gap: 16px;
     min-height: 31px;
-    padding: 2px 8px 0 22px;
+    padding: 2px 10px 0 21px;
     background: #000000;
     border-bottom: none;
     backdrop-filter: none;
@@ -2765,15 +2765,16 @@ body.home-screen .header::before {
 body.home-screen .header-left {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
     flex: 0 0 auto;
     min-width: 0;
 }
 
 body.home-screen .new-chat-btn {
-    min-width: 0;
+    width: 38px;
+    min-width: 38px;
     height: 28px;
-    padding: 0 16px 0 14px;
+    padding: 0;
     gap: 0;
     border: none;
     border-radius: 6px;
@@ -2783,6 +2784,7 @@ body.home-screen .new-chat-btn {
     font-size: 12px;
     font-weight: 600;
     margin-bottom: 0;
+    justify-content: center;
 }
 
 body.home-screen .new-chat-btn svg {
@@ -2811,7 +2813,7 @@ body.home-screen .header-summary-meta {
 body.home-screen .header-summary-title {
     max-width: none;
     color: rgba(240, 242, 245, 0.86);
-    font-size: 12px;
+    font-size: 12.5px;
     font-weight: 500;
     letter-spacing: -0.01em;
 }
@@ -2820,8 +2822,9 @@ body.home-screen .header-controls {
     display: inline-flex;
     align-items: center;
     flex: 0 0 auto;
-    gap: 6px;
-    margin-left: 184px;
+    gap: 7px;
+    margin-left: auto;
+    padding-right: 8px;
 }
 
 body.home-screen #refreshBtn {
@@ -2843,12 +2846,12 @@ body.home-screen #fullscreenBtn {
 body.home-screen .header-icon-btn,
 body.home-screen .refresh-btn,
 body.home-screen .settings-btn {
-    width: 18px;
-    height: 18px;
+    width: 17px;
+    height: 17px;
     padding: 0;
     border-radius: 4px;
     color: #eceff2;
-    flex: 0 0 18px;
+    flex: 0 0 17px;
 }
 
 body.home-screen .header-icon-btn:hover,
@@ -2924,11 +2927,11 @@ body.home-screen .cursor-shell-search-input {
     width: 100%;
     height: 34px;
     border: 1px solid rgba(255, 255, 255, 0.03);
-    border-radius: 8px;
-    background: #37383c;
+    border-radius: 9px;
+    background: #3a3b40;
     color: #f2f3f5;
-    padding: 0 12px;
-    font-size: 14px;
+    padding: 0 13px;
+    font-size: 13.5px;
     outline: none;
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
@@ -2941,9 +2944,9 @@ body.home-screen .cursor-shell-status-line {
     display: flex;
     align-items: center;
     gap: 28px;
-    padding: 14px 8px 0;
+    padding: 13px 8px 0;
     color: #e5e7eb;
-    font-size: 13px;
+    font-size: 12.6px;
     line-height: 1.3;
 }
 
@@ -2967,7 +2970,7 @@ body.home-screen .input-section {
     right: 0;
     bottom: 0;
     z-index: 120;
-    padding: 0 13px 12px;
+    padding: 0 13px 11px;
     background: transparent !important;
 }
 
@@ -2975,7 +2978,7 @@ body.home-screen .input-box {
     width: 100%;
     max-width: none;
     margin: 0;
-    background: #37383c;
+    background: #3a3b40;
     border: 1px solid rgba(255, 255, 255, 0.04);
     border-radius: 10px;
     box-shadow: none;
@@ -2987,10 +2990,10 @@ body.home-screen .input-box:focus-within {
 }
 
 body.home-screen .input-box textarea {
-    min-height: 40px;
+    min-height: 38px;
     max-height: 120px;
-    padding: 12px 12px 6px;
-    font-size: 13px;
+    padding: 11px 13px 5px;
+    font-size: 12.8px;
     line-height: 1.35;
     color: #f2f3f5 !important;
 }
@@ -3002,18 +3005,20 @@ body.home-screen .input-box textarea::placeholder {
 body.home-screen .input-toolbar {
     align-items: center;
     gap: 6px;
-    padding: 0 8px 8px;
+    padding: 0 9px 9px;
 }
 
 body.home-screen #modeDropdown {
     order: 1;
     flex: 0 0 auto;
+    min-width: 82px;
 }
 
 body.home-screen #modelDropdown {
     order: 2;
     flex: 0 0 auto;
     min-width: 0;
+    max-width: calc(100% - 126px);
 }
 
 body.home-screen .toolbar-spacer {
@@ -3054,7 +3059,7 @@ body.home-screen #attachBtn::before {
 
 body.home-screen .toolbar-chip {
     min-height: 24px;
-    padding: 0 8px;
+    padding: 0 9px;
     gap: 3px;
     border-radius: 999px;
     background: rgba(255, 255, 255, 0.04);
@@ -3071,6 +3076,7 @@ body.home-screen #modeBtn,
 body.home-screen #modelBtn {
     display: inline-flex;
     align-items: center;
+    justify-content: flex-start;
     gap: 4px;
 }
 
@@ -3085,10 +3091,14 @@ body.home-screen #modeBtn::before {
 body.home-screen #modeText,
 body.home-screen #modelText {
     order: 2;
+    min-width: 0;
 }
 
 body.home-screen #modeText {
     font-size: 12px;
+    max-width: none;
+    overflow: visible;
+    text-overflow: clip;
 }
 
 body.home-screen #modeBtn svg,
@@ -3125,6 +3135,11 @@ body.home-screen #modelMenu .model-menu-panel {
     padding: 6px 8px 8px;
 }
 
+body.home-screen #modelMenu.auto-compact-menu {
+    min-width: 228px;
+    max-width: 228px;
+}
+
 body.home-screen #modelMenu .model-search-wrap {
     padding: 0 0 8px;
 }
@@ -3157,6 +3172,10 @@ body.home-screen #modelMenu .model-toggle-row {
     background: transparent;
 }
 
+body.home-screen #modelMenu .compact-auto-menu .model-toggle-row {
+    padding: 1px 1px 2px;
+}
+
 body.home-screen #modelMenu .model-toggle-row:hover,
 body.home-screen #modelMenu .model-toggle-row.active {
     background: transparent;
@@ -3177,6 +3196,10 @@ body.home-screen #modelMenu .model-toggle-desc {
     color: #b9bcc1;
     font-size: 11.8px;
     line-height: 1.18;
+}
+
+body.home-screen #modelMenu .compact-auto-menu .model-toggle-desc {
+    max-width: 154px;
 }
 
 body.home-screen #modelMenu .model-toggle-switch {
@@ -3319,4 +3342,35 @@ body.home-screen #sendBtn::before {
     height: 8px;
     border-radius: 2px;
     background: #16171a;
+}
+
+body.home-screen,
+body.home-screen input,
+body.home-screen textarea,
+body.home-screen button {
+    font-family: "Segoe UI", "Segoe UI Variable", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+@media (max-width: 520px) {
+    body:not(.home-screen) .app-chrome,
+    body:not(.home-screen) .status-dock {
+        display: none !important;
+    }
+
+    body:not(.home-screen) .header {
+        padding: 10px 10px 6px;
+        background: #000000;
+        border-bottom: none;
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+    }
+
+    body:not(.home-screen) .chat-content {
+        padding-top: 0;
+    }
+
+    body:not(.home-screen) .input-section {
+        padding: 0 10px 10px;
+        background: transparent;
+    }
 }
