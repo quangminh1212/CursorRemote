@@ -89,9 +89,16 @@ function normalizeChatTitle(title) {
     return typeof title === 'string' ? title.trim() : '';
 }
 
+function normalizeChatTitleMatchKey(title) {
+    return normalizeChatTitle(title)
+        .replace(/[\u2026.]+$/g, '')
+        .trim()
+        .toLowerCase();
+}
+
 function chatTitlesMatch(left, right) {
-    const a = normalizeChatTitle(left).toLowerCase();
-    const b = normalizeChatTitle(right).toLowerCase();
+    const a = normalizeChatTitleMatchKey(left);
+    const b = normalizeChatTitleMatchKey(right);
     if (!a || !b) return false;
     return a === b || a.includes(b) || b.includes(a);
 }
@@ -136,14 +143,7 @@ function extractActiveChatTitleFromSnapshot() {
 }
 
 function buildSnapshotTabsHtml(tabs = [], activeTitle = '') {
-    const normalizedTabs = Array.isArray(tabs)
-        ? tabs
-            .map((tab) => ({
-                title: normalizeChatTitle(tab?.title),
-                active: !!tab?.active
-            }))
-            .filter((tab) => tab.title)
-        : [];
+    const normalizedTabs = normalizeSnapshotChatTabs(tabs, activeTitle);
 
     if (!normalizedTabs.length) return '';
 
@@ -155,15 +155,80 @@ function buildSnapshotTabsHtml(tabs = [], activeTitle = '') {
             <div class="snapshot-chat-tabs-track">
                 ${normalizedTabs.map((tab) => {
                     const isActive = tab.active || (!hasExplicitActive && resolvedActiveTitle && chatTitlesMatch(tab.title, resolvedActiveTitle));
+                    const safeTitle = escapeHtmlAttribute(tab.title);
                     return `
-                        <div class="snapshot-chat-tab${isActive ? ' active' : ''}" title="${escapeHtml(tab.title)}">
+                        <button
+                            class="snapshot-chat-tab${isActive ? ' active' : ''}"
+                            type="button"
+                            title="${safeTitle}"
+                            data-chat-title="${safeTitle}"
+                            aria-label="Open chat ${safeTitle}"
+                            aria-pressed="${isActive ? 'true' : 'false'}"
+                            ${isActive ? 'aria-current="page"' : ''}
+                        >
                             <span class="snapshot-chat-tab-label">${escapeHtml(tab.title)}</span>
-                        </div>
+                        </button>
                     `;
                 }).join('')}
             </div>
         </div>
     `;
+}
+
+function getSnapshotTabScore(tab, activeTitle = '') {
+    const title = normalizeChatTitle(tab?.title);
+    if (!title) return -1;
+
+    let score = title.length;
+    if (tab?.active) score += 1000;
+    if (activeTitle) {
+        if (chatTitlesMatch(title, activeTitle)) score += 120;
+        if (title.toLowerCase() === activeTitle.toLowerCase()) score += 120;
+    }
+    return score;
+}
+
+function normalizeSnapshotChatTabs(tabs = [], activeTitle = '') {
+    const resolvedActiveTitle = normalizeChatTitle(activeTitle);
+    const exactDeduped = [];
+
+    (Array.isArray(tabs) ? tabs : []).forEach((tab) => {
+        const candidate = {
+            title: normalizeChatTitle(tab?.title),
+            active: !!tab?.active
+        };
+        if (!candidate.title) return;
+
+        const existingIndex = exactDeduped.findIndex((item) => item.title.toLowerCase() === candidate.title.toLowerCase());
+        if (existingIndex === -1) {
+            exactDeduped.push(candidate);
+            return;
+        }
+
+        if (getSnapshotTabScore(candidate, resolvedActiveTitle) > getSnapshotTabScore(exactDeduped[existingIndex], resolvedActiveTitle)) {
+            exactDeduped[existingIndex] = candidate;
+        }
+    });
+
+    if (!resolvedActiveTitle) {
+        return exactDeduped;
+    }
+
+    const activeLikeIndexes = exactDeduped
+        .map((tab, index) => (chatTitlesMatch(tab.title, resolvedActiveTitle) ? index : -1))
+        .filter((index) => index >= 0);
+
+    if (activeLikeIndexes.length <= 1) {
+        return exactDeduped;
+    }
+
+    const keepIndex = activeLikeIndexes.reduce((bestIndex, currentIndex) =>
+        getSnapshotTabScore(exactDeduped[currentIndex], resolvedActiveTitle) > getSnapshotTabScore(exactDeduped[bestIndex], resolvedActiveTitle)
+            ? currentIndex
+            : bestIndex
+    );
+
+    return exactDeduped.filter((tab, index) => !activeLikeIndexes.includes(index) || index === keepIndex);
 }
 
 function updateCursorShellStatus({ connected, running, snapshotReady }) {
@@ -318,7 +383,12 @@ let availableModes = [];
 let availableModels = [];
 let lastModelDropdownState = null;
 let activeChatTitle = '';
+let lastChatTabs = [];
 let restartCursorPending = false;
+let selectChatRequestId = 0;
+let appStateRequestInFlight = null;
+let appStateRequestId = 0;
+let latestAppliedAppStateRequestId = 0;
 
 function setHasChatTabs(hasTabs) {
     document.body.classList.toggle('has-chat-tabs', !!hasTabs);
@@ -326,11 +396,14 @@ function setHasChatTabs(hasTabs) {
 
 function renderHeaderChatTabs(tabs = [], activeTitle = '') {
     if (!headerChatTabs) {
+        lastChatTabs = [];
         setHasChatTabs(false);
         return;
     }
 
-    const tabsHtml = buildSnapshotTabsHtml(tabs, activeTitle);
+    const normalizedTabs = normalizeSnapshotChatTabs(tabs, activeTitle);
+    lastChatTabs = normalizedTabs.slice();
+    const tabsHtml = buildSnapshotTabsHtml(normalizedTabs, activeTitle);
     headerChatTabs.innerHTML = tabsHtml;
     headerChatTabs.setAttribute('aria-hidden', tabsHtml ? 'false' : 'true');
     setHasChatTabs(!!tabsHtml);
@@ -382,6 +455,9 @@ function setActiveChatTitle(title) {
     const normalizedTitle = normalizeChatTitle(title);
     if (activeChatTitle === normalizedTitle) return;
     activeChatTitle = normalizedTitle;
+    if (lastChatTabs.length && headerChatTabs) {
+        renderHeaderChatTabs(lastChatTabs, normalizedTitle);
+    }
     if (!document.body.classList.contains('home-screen')) {
         updateWorkspaceChrome();
     }
@@ -447,36 +523,166 @@ async function fetchWithAuth(url, options = {}) {
 const USER_SCROLL_LOCK_DURATION = 3000; // 3 seconds of scroll protection
 
 // --- Sync State (Desktop is Always Priority) ---
-async function fetchAppState() {
-    try {
-        const res = await fetchWithAuth('/app-state');
-        const data = await res.json();
+function hasLiveCursorView(state = {}) {
+    return !!(
+        state?.hasChat ||
+        state?.editorFound ||
+        (Array.isArray(state?.chatTabs) && state.chatTabs.length) ||
+        normalizeChatTitle(state?.activeChatTitle || '')
+    );
+}
 
-        // Mode sync - desktop is source of truth
-        if (data.mode && data.mode !== 'Unknown') {
-            setCurrentModeValue(data.mode);
+async function refreshOpenDropdowns({ modeChanged = false, modelChanged = false } = {}) {
+    const refreshTasks = [];
+
+    if (modeChanged && modeMenu.classList.contains('show')) {
+        refreshTasks.push((async () => {
+            try {
+                const data = await fetchDropdownOptions('mode');
+                const normalized = normalizeModeDropdownState(data);
+                availableModes = normalized.items.map((item) => item.label);
+                if (data.current && data.current !== 'Unknown') {
+                    setCurrentModeValue(data.current);
+                    normalized.current = getModeDisplayLabel(data.current);
+                }
+                buildModeDropdownMenu(modeMenu, normalized);
+            } catch (error) {
+                console.error('[SYNC] Failed to refresh mode dropdown', error);
+            }
+        })());
+    }
+
+    if (modelChanged && modelMenu.classList.contains('show')) {
+        refreshTasks.push((async () => {
+            try {
+                const data = await fetchDropdownOptions('model');
+                const hasStructuredModelMenu = !data.error && (
+                    !!data.searchPlaceholder ||
+                    !!data.footerLabel ||
+                    (Array.isArray(data.toggles) && data.toggles.length >= 2) ||
+                    (Array.isArray(data.options) && data.options.length >= 3)
+                );
+                const normalized = normalizeModelDropdownState(
+                    hasStructuredModelMenu
+                        ? data
+                        : getModelDropdownFallbackState({
+                            current: currentModel && currentModel !== 'Unknown' ? currentModel : modelText.textContent
+                        })
+                );
+
+                availableModels = normalized.options;
+                lastModelDropdownState = normalized;
+                buildModelDropdownMenu(modelMenu, normalized);
+            } catch (error) {
+                console.error('[SYNC] Failed to refresh model dropdown', error);
+            }
+        })());
+    }
+
+    if (refreshTasks.length) {
+        await Promise.allSettled(refreshTasks);
+    }
+}
+
+function applyDesktopState(data = {}, { syncOpenDropdowns = true, loadSnapshotWhenMissing = true } = {}) {
+    if (!data || typeof data !== 'object') return { modeChanged: false, modelChanged: false };
+
+    const nextMode = data.mode && data.mode !== 'Unknown'
+        ? getModeDisplayLabel(data.mode)
+        : currentMode;
+    const nextModel = data.model && data.model !== 'Unknown'
+        ? String(data.model).trim()
+        : currentModel;
+    const previousMode = currentMode;
+    const previousModel = currentModel;
+    const modeChanged = !!nextMode && nextMode !== previousMode;
+    const modelChanged = !!nextModel && nextModel !== previousModel;
+    const liveCursorView = hasLiveCursorView(data);
+    const shouldShowHomeScreen =
+        data.hasChat === false &&
+        data.editorFound === false &&
+        !liveCursorView;
+
+    if (data.mode && data.mode !== 'Unknown') {
+        setCurrentModeValue(data.mode);
+    }
+
+    if (nextModel) {
+        currentModel = nextModel;
+        modelText.textContent = nextModel;
+        if (lastModelDropdownState) {
+            lastModelDropdownState.current = nextModel;
+            lastModelDropdownState.toggles = (lastModelDropdownState.toggles || []).map((toggle) =>
+                toggle.key === 'auto'
+                    ? { ...toggle, enabled: /^auto$/i.test(nextModel) }
+                    : toggle
+            );
         }
+    }
 
-        // Model sync - desktop is source of truth
-        if (data.model && data.model !== 'Unknown') {
-            modelText.textContent = data.model;
-            currentModel = data.model;
+    if (typeof data.activeChatTitle === 'string') {
+        setActiveChatTitle(data.activeChatTitle);
+    }
+
+    if (Array.isArray(data.chatTabs)) {
+        renderHeaderChatTabs(data.chatTabs, typeof data.activeChatTitle === 'string' ? data.activeChatTitle : activeChatTitle);
+    }
+
+    document.body.classList.toggle('agent-running', !!data.isRunning);
+    chatIsOpen = !!(data.hasChat || data.editorFound || liveCursorView);
+
+    if (shouldShowHomeScreen) {
+        showEmptyState();
+    } else if (chatIsOpen) {
+        setHomeScreen(false);
+        if (!hasSnapshotLoaded && loadSnapshotWhenMissing) {
+            setTimeout(loadSnapshot, 0);
         }
+    }
 
-        if (data.activeChatTitle) {
-            setActiveChatTitle(data.activeChatTitle);
+    updateWorkspaceChrome({
+        mode: nextMode || modeText.textContent,
+        model: nextModel || modelText.textContent,
+        running: !!data.isRunning
+    });
+
+    if (syncOpenDropdowns && (modeChanged || modelChanged)) {
+        refreshOpenDropdowns({ modeChanged, modelChanged });
+    }
+
+    return { modeChanged, modelChanged };
+}
+
+async function fetchAppState({ force = false, applyOptions = {} } = {}) {
+    if (appStateRequestInFlight && !force) {
+        return appStateRequestInFlight;
+    }
+
+    const requestId = ++appStateRequestId;
+    const request = (async () => {
+        try {
+            const res = await fetchWithAuth('/app-state');
+            const data = await res.json();
+
+            if (requestId >= latestAppliedAppStateRequestId) {
+                latestAppliedAppStateRequestId = requestId;
+                applyDesktopState(data, applyOptions);
+            }
+
+            console.log('[SYNC] State refreshed from Desktop:', data);
+            return data;
+        } catch (e) {
+            console.error('[SYNC] Failed to sync state', e);
+            return null;
+        } finally {
+            if (appStateRequestInFlight === request) {
+                appStateRequestInFlight = null;
+            }
         }
+    })();
 
-        // Running state sync - toggle send/stop button
-        document.body.classList.toggle('agent-running', !!data.isRunning);
-        updateWorkspaceChrome({
-            mode: data.mode && data.mode !== 'Unknown' ? getModeDisplayLabel(data.mode) : modeText.textContent,
-            model: data.model && data.model !== 'Unknown' ? data.model : modelText.textContent,
-            running: !!data.isRunning
-        });
-
-        console.log('[SYNC] State refreshed from Desktop:', data);
-    } catch (e) { console.error('[SYNC] Failed to sync state', e); }
+    appStateRequestInFlight = request;
+    return request;
 }
 
 // --- SSL Banner ---
@@ -543,13 +749,13 @@ const MODE_DISPLAY_ALIASES = {
     ask: 'Ask'
 };
 const MODEL_FALLBACK_OPTIONS = [
-    { name: 'Composer 1.5' },
-    { name: 'GPT-5.4' },
-    { name: 'GPT-5.3 Codex' },
-    { name: 'Sonnet 4.6' },
-    { name: 'Opus 4.6' },
-    { name: 'Gemini 3 Flash' },
-    { name: 'gpt-4' }
+    { name: 'Composer 1.5', icon: 'cloud' },
+    { name: 'GPT-5.4', icon: 'cloud' },
+    { name: 'GPT-5.3 Codex', icon: 'cloud' },
+    { name: 'Sonnet 4.6', icon: 'cloud' },
+    { name: 'Opus 4.6', icon: 'cloud' },
+    { name: 'Gemini 3 Flash', icon: 'cloud' },
+    { name: 'gpt-4', icon: '' }
 ];
 const MODEL_FALLBACK_TOGGLES = [
     { key: 'auto', label: 'Auto', description: 'Balanced quality and speed, recommended for most tasks', enabled: false },
@@ -660,6 +866,44 @@ function getModelDropdownFallbackState(overrides = {}) {
     };
 }
 
+function getModelOptionValue(option) {
+    if (!option) return '';
+    if (typeof option === 'string') return option.trim();
+    return String(option.value || option.name || '').trim();
+}
+
+function getModelOptionIcon(option) {
+    if (option && typeof option === 'object' && 'icon' in option) {
+        return String(option.icon || '').trim();
+    }
+
+    const value = getModelOptionValue(option).toLowerCase();
+    const fallback = MODEL_FALLBACK_OPTIONS.find((item) => item.name.toLowerCase() === value);
+    return fallback?.icon || '';
+}
+
+function normalizeModelOptionItems(options = []) {
+    const seen = new Set();
+    return options
+        .map((option) => {
+            const value = getModelOptionValue(option);
+            if (!value) return null;
+            const key = value.toLowerCase();
+            if (seen.has(key)) return null;
+            seen.add(key);
+            return {
+                value,
+                icon: getModelOptionIcon(option)
+            };
+        })
+        .filter(Boolean);
+}
+
+function getModelOptionIconSvg(iconName = '') {
+    if (iconName !== 'cloud') return '';
+    return `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"><path d="M5.2 12.4h5.4a2.4 2.4 0 0 0 .2-4.8 3.3 3.3 0 0 0-6.4-.8 2.2 2.2 0 0 0 .8 5.6Z"></path></svg>`;
+}
+
 function timeAgo(dateStr) {
     if (!dateStr) return '';
     const diff = Date.now() - new Date(dateStr).getTime();
@@ -768,6 +1012,7 @@ function connectWebSocket() {
     ws.onopen = () => {
         console.log('WS Connected');
         updateStatus(true);
+        fetchAppState({ force: true });
         loadSnapshot(); // Initial load via HTTP
     };
 
@@ -775,6 +1020,10 @@ function connectWebSocket() {
         const data = JSON.parse(event.data);
         if (data.type === 'error' && data.message === 'Unauthorized') {
             window.location.href = '/login.html';
+            return;
+        }
+        if (data.type === 'app_state_update' && data.state) {
+            applyDesktopState(data.state);
             return;
         }
         // Hash-based dedup: only fetch if content actually changed
@@ -1282,34 +1531,123 @@ ${snapshotRootScope} .markdown-root .space-y-4 {
 ${snapshotRootScope} .composer-tool-former-message,
 ${snapshotRootScope} .composer-tool-call-container,
 ${snapshotRootScope} .composer-terminal-tool-call-block-container {
-    background: rgba(255, 255, 255, 0.03) !important;
-    border: 1px solid rgba(255, 255, 255, 0.05) !important;
-    border-radius: 12px !important;
+    background: transparent !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    border-radius: 10px !important;
     box-shadow: none !important;
 }
 
+${snapshotRootScope} .composer-tool-call-top-header,
+${snapshotRootScope} .composer-terminal-top-header-row,
+${snapshotRootScope} .composer-tool-call-header,
+${snapshotRootScope} .composer-tool-call-header-content,
+${snapshotRootScope} .composer-tool-call-content,
+${snapshotRootScope} .composer-tool-call-body,
+${snapshotRootScope} .composer-tool-call-body-inner,
+${snapshotRootScope} .composer-tool-call-body-content,
+${snapshotRootScope} .composer-terminal-output {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+}
+
+${snapshotRootScope} .composer-tool-call-container .rounded-lg,
+${snapshotRootScope} .composer-tool-call-container .composer-terminal-output,
+${snapshotRootScope} .composer-tool-call-container pre,
+${snapshotRootScope} .composer-tool-call-container code,
+${snapshotRootScope} .composer-tool-call-container .monaco-editor-background {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
 ${snapshotRootScope} .composer-tool-call-control-row,
+${snapshotRootScope} .composer-tool-call-header-right,
+${snapshotRootScope} .composer-terminal-copy-button,
+${snapshotRootScope} .composer-tool-call-allowlist-button,
+${snapshotRootScope} .composer-tool-call-menu-button,
+${snapshotRootScope} .mobile-copy-btn {
+    display: none !important;
+}
+
 ${snapshotRootScope} .composer-tool-call-left-controls {
     display: flex !important;
     align-items: center !important;
-    gap: 8px !important;
+    gap: 6px !important;
 }
 
-${snapshotRootScope} .composer-run-button,
-${snapshotRootScope} .composer-tool-call-allowlist-button,
-${snapshotRootScope} .anysphere-button,
-${snapshotRootScope} .anysphere-text-button {
-    background: rgba(255, 255, 255, 0.05) !important;
-    border: 1px solid rgba(255, 255, 255, 0.06) !important;
-    border-radius: 8px !important;
-    color: #d8dde6 !important;
-    padding: 2px 8px !important;
+${snapshotRootScope} .composer-terminal-top-header-row {
+    min-height: 0 !important;
+    padding: 0 !important;
 }
 
-${snapshotRootScope} .composer-run-button {
-    background: rgba(239, 68, 68, 0.12) !important;
-    border-color: rgba(239, 68, 68, 0.34) !important;
-    color: #f5d0d0 !important;
+${snapshotRootScope} .composer-terminal-top-header-icon-slot {
+    display: none !important;
+}
+
+${snapshotRootScope} .composer-terminal-top-header-text,
+${snapshotRootScope} .composer-terminal-top-header-description,
+${snapshotRootScope} .composer-tool-former-message,
+${snapshotRootScope} .composer-tool-call-container {
+    font-size: 13px !important;
+    line-height: 1.45 !important;
+}
+
+${snapshotRootScope} .composer-tool-call-container.composer-terminal-compact-mode.composer-terminal-header-only,
+${snapshotRootScope} .composer-terminal-tool-call-block-container.composer-terminal-compact-mode.composer-terminal-header-only {
+    padding: 5px 8px !important;
+    gap: 0 !important;
+}
+
+${snapshotRootScope} .composer-tool-call-container.composer-terminal-compact-mode.composer-terminal-header-only .composer-tool-call-top-header,
+${snapshotRootScope} .composer-terminal-tool-call-block-container.composer-terminal-compact-mode.composer-terminal-header-only .composer-tool-call-top-header,
+${snapshotRootScope} .composer-tool-call-container.composer-terminal-compact-mode.composer-terminal-header-only .composer-terminal-top-header-row,
+${snapshotRootScope} .composer-terminal-tool-call-block-container.composer-terminal-compact-mode.composer-terminal-header-only .composer-terminal-top-header-row {
+    align-items: center !important;
+    gap: 6px !important;
+    min-width: 0 !important;
+    overflow: hidden !important;
+}
+
+${snapshotRootScope} .composer-tool-call-container.composer-terminal-compact-mode.composer-terminal-header-only .composer-terminal-top-header-text,
+${snapshotRootScope} .composer-terminal-tool-call-block-container.composer-terminal-compact-mode.composer-terminal-header-only .composer-terminal-top-header-text {
+    display: block !important;
+    min-width: 0 !important;
+    width: 100% !important;
+    overflow: hidden !important;
+    white-space: nowrap !important;
+    text-overflow: ellipsis !important;
+}
+
+${snapshotRootScope} .composer-tool-call-container.composer-terminal-compact-mode.composer-terminal-header-only .composer-terminal-top-header-description,
+${snapshotRootScope} .composer-tool-call-container.composer-terminal-compact-mode.composer-terminal-header-only .composer-terminal-top-header-candidates,
+${snapshotRootScope} .composer-terminal-tool-call-block-container.composer-terminal-compact-mode.composer-terminal-header-only .composer-terminal-top-header-description,
+${snapshotRootScope} .composer-terminal-tool-call-block-container.composer-terminal-compact-mode.composer-terminal-header-only .composer-terminal-top-header-candidates {
+    display: inline !important;
+    white-space: nowrap !important;
+}
+
+${snapshotRootScope} .composer-tool-call-container.composer-terminal-compact-mode.composer-terminal-header-only .composer-tool-call-content,
+${snapshotRootScope} .composer-tool-call-container.composer-terminal-compact-mode.composer-terminal-header-only .composer-tool-call-body,
+${snapshotRootScope} .composer-tool-call-container.composer-terminal-compact-mode.composer-terminal-header-only .composer-tool-call-body-inner,
+${snapshotRootScope} .composer-tool-call-container.composer-terminal-compact-mode.composer-terminal-header-only .composer-tool-call-body-content,
+${snapshotRootScope} .composer-terminal-tool-call-block-container.composer-terminal-compact-mode.composer-terminal-header-only .composer-tool-call-content,
+${snapshotRootScope} .composer-terminal-tool-call-block-container.composer-terminal-compact-mode.composer-terminal-header-only .composer-tool-call-body,
+${snapshotRootScope} .composer-terminal-tool-call-block-container.composer-terminal-compact-mode.composer-terminal-header-only .composer-tool-call-body-inner,
+${snapshotRootScope} .composer-terminal-tool-call-block-container.composer-terminal-compact-mode.composer-terminal-header-only .composer-tool-call-body-content {
+    max-height: 0 !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+${snapshotRootScope} .composer-tool-call-container.composer-terminal-compact-mode.composer-terminal-header-only .composer-tool-call-bottom-expand-inline,
+${snapshotRootScope} .composer-terminal-tool-call-block-container.composer-terminal-compact-mode.composer-terminal-header-only .composer-tool-call-bottom-expand-inline {
+    display: none !important;
 }
 
 ${snapshotRootScope} [data-message-role="human"] .composer-human-message,
@@ -1365,9 +1703,6 @@ ${snapshotRootScope} [data-message-kind="tool"] {
         document.documentElement.classList.add('dark');
         document.documentElement.style.colorScheme = 'dark';
 
-        // Add mobile copy buttons to all code blocks
-        addMobileCopyButtons();
-
         const snapshotTitle = normalizeChatTitle(data.activeChatTitle) || extractActiveChatTitleFromSnapshot();
         if (snapshotTitle) {
             setActiveChatTitle(snapshotTitle);
@@ -1411,6 +1746,15 @@ async function loadSnapshot() {
         const response = await fetchWithAuth('/snapshot');
         if (!response.ok) {
             if (response.status === 503) {
+                const latestState = await fetchAppState({
+                    force: true,
+                    applyOptions: {
+                        loadSnapshotWhenMissing: false
+                    }
+                });
+                if (hasLiveCursorView(latestState)) {
+                    return;
+                }
                 // No snapshot available - likely no chat open
                 chatIsOpen = false;
                 hasSnapshotLoaded = false;
@@ -2070,33 +2414,78 @@ if (homeRecentsLink) {
     });
 }
 
+if (headerChatTabs) {
+    headerChatTabs.addEventListener('click', (e) => {
+        const tab = e.target.closest('.snapshot-chat-tab[data-chat-title]');
+        if (!tab || tab.disabled) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+
+        const title = tab.getAttribute('data-chat-title');
+        if (!title) return;
+
+        selectChat(title);
+    });
+}
+
 // --- Select Chat from History ---
 async function selectChat(title) {
+    const normalizedTitle = normalizeChatTitle(title);
+    if (!normalizedTitle) return false;
+    if (activeChatTitle === normalizedTitle) {
+        return true;
+    }
+
+    const requestId = ++selectChatRequestId;
+    const previousTitle = activeChatTitle;
+
     try {
         const res = await fetchWithAuth('/select-chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title })
+            body: JSON.stringify({ title: normalizedTitle })
         });
         const data = await res.json();
 
         if (data.success) {
-            setActiveChatTitle(title);
+            setActiveChatTitle(data.title || normalizedTitle);
             setHomeScreen(false);
+            fetchAppState();
             setTimeout(loadSnapshot, 300);
+            setTimeout(fetchAppState, 600);
             setTimeout(loadSnapshot, 800);
             setTimeout(checkChatStatus, 1000);
+            return true;
         } else {
+            setActiveChatTitle(previousTitle);
             console.error('Failed to select chat:', data.error);
         }
     } catch (e) {
+        setActiveChatTitle(previousTitle);
         console.error('Select chat error:', e);
+    } finally {
+        if (requestId === selectChatRequestId) {
+            selectChatRequestId = 0;
+        }
     }
+
+    return false;
 }
 
 // --- Check Chat Status ---
 async function checkChatStatus() {
     try {
+        const syncedState = await fetchAppState({
+            force: true,
+            applyOptions: {
+                loadSnapshotWhenMissing: !hasSnapshotLoaded
+            }
+        });
+        if (syncedState) {
+            return;
+        }
+
         const res = await fetchWithAuth('/chat-status');
         const data = await res.json();
         const shouldShowHomeScreen = !data.hasChat && !data.editorFound;
@@ -2137,6 +2526,10 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+function escapeHtmlAttribute(text) {
+    return escapeHtml(text).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 // --- Dropdown Logic ---
@@ -2235,17 +2628,21 @@ function normalizeModelDropdownState(data = {}) {
 
         return { ...fallbackToggle };
     });
-    const options = Array.isArray(data.options) && data.options.length >= 3
-        ? data.options.filter((value) => value && !/^auto$/i.test(value))
-        : fallback.options.filter((value) => value && !/^auto$/i.test(value));
+    const rawOptionItems = Array.isArray(data.items) && data.items.length
+        ? data.items
+        : (Array.isArray(data.options) && data.options.length >= 3 ? data.options : fallback.options);
+    const items = normalizeModelOptionItems(rawOptionItems)
+        .filter((item) => item.value && !/^auto$/i.test(item.value));
+    const options = items.map((item) => item.value);
 
     return {
         current,
         options,
+        items,
         toggles,
         searchPlaceholder: data.searchPlaceholder || fallback.searchPlaceholder,
         footerLabel: data.footerLabel || fallback.footerLabel || '',
-        compactAuto: document.body.classList.contains('home-screen') && /^auto$/i.test(current)
+        compactAuto: /^auto$/i.test(current)
     };
 }
 
@@ -2254,7 +2651,8 @@ function renderModelOptionsList(listEl, state, filterText = '') {
     listEl.innerHTML = '';
 
     const normalizedFilter = filterText.trim().toLowerCase();
-    const filteredOptions = state.options.filter((value) => !normalizedFilter || value.toLowerCase().includes(normalizedFilter));
+    const filteredOptions = (Array.isArray(state.items) ? state.items : [])
+        .filter((item) => !normalizedFilter || item.value.toLowerCase().includes(normalizedFilter));
 
     if (!filteredOptions.length) {
         const empty = document.createElement('div');
@@ -2264,13 +2662,17 @@ function renderModelOptionsList(listEl, state, filterText = '') {
         return;
     }
 
-    filteredOptions.forEach((value) => {
+    filteredOptions.forEach((itemState) => {
+        const value = itemState.value;
         const item = document.createElement('button');
         item.type = 'button';
         item.className = 'dropdown-option model-option' + (value === state.current ? ' active' : '');
         item.dataset.value = value;
         item.innerHTML = `
-            <span class="model-option-name">${escapeHtml(value)}</span>
+            <span class="model-option-main">
+                <span class="model-option-name">${escapeHtml(value)}</span>
+                ${itemState.icon ? `<span class="model-option-icon" aria-hidden="true">${getModelOptionIconSvg(itemState.icon)}</span>` : ''}
+            </span>
             <span class="model-option-check" aria-hidden="true">${value === state.current ? '&#10003;' : ''}</span>
         `;
         listEl.appendChild(item);
