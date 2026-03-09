@@ -52,6 +52,8 @@ const fileInput = document.getElementById('fileInput');
 const settingsBtn = document.getElementById('settingsBtn');
 const settingsDropdown = document.getElementById('settingsDropdown');
 const fullscreenBtn = document.getElementById('fullscreenBtn');
+const restartCursorCdpBtn = document.getElementById('restartCursorCdpBtn');
+const headerChatTabs = document.getElementById('headerChatTabs');
 const homeContext = document.getElementById('homeContext');
 const homeContextAgent = document.getElementById('homeContextAgent');
 const homeRecents = document.getElementById('homeRecents');
@@ -77,6 +79,7 @@ const DEFAULT_COMPOSER_PLACEHOLDER = 'Ask anything, @ to mention, / for workflow
 const HOME_COMPOSER_PLACEHOLDER = 'Add a follow-up';
 const DEFAULT_APP_TITLE = appBrandTitle?.textContent || 'Cursor Remote';
 const DEFAULT_NEW_CHAT_LABEL = newChatLabel?.textContent || 'New Chat';
+const DEFAULT_RESTART_CURSOR_LABEL = restartCursorCdpBtn?.querySelector('.settings-option-label')?.textContent || 'Restart Cursor';
 
 function setTextContent(element, value) {
     if (element) element.textContent = value;
@@ -106,6 +109,13 @@ function syncShellPromptFromComposer(value = messageInput.value) {
 }
 
 function extractActiveChatTitleFromSnapshot() {
+    if (headerChatTabs) {
+        const activeHeaderTabLabel = headerChatTabs.querySelector('.snapshot-chat-tab.active .snapshot-chat-tab-label');
+        if (activeHeaderTabLabel) {
+            return normalizeChatTitle(activeHeaderTabLabel.textContent || '');
+        }
+    }
+
     if (!chatContent) return '';
 
     const activeTabLabel = chatContent.querySelector('.snapshot-chat-tab.active .snapshot-chat-tab-label');
@@ -308,6 +318,65 @@ let availableModes = [];
 let availableModels = [];
 let lastModelDropdownState = null;
 let activeChatTitle = '';
+let restartCursorPending = false;
+
+function setHasChatTabs(hasTabs) {
+    document.body.classList.toggle('has-chat-tabs', !!hasTabs);
+}
+
+function renderHeaderChatTabs(tabs = [], activeTitle = '') {
+    if (!headerChatTabs) {
+        setHasChatTabs(false);
+        return;
+    }
+
+    const tabsHtml = buildSnapshotTabsHtml(tabs, activeTitle);
+    headerChatTabs.innerHTML = tabsHtml;
+    headerChatTabs.setAttribute('aria-hidden', tabsHtml ? 'false' : 'true');
+    setHasChatTabs(!!tabsHtml);
+}
+
+function setRestartCursorButtonState(isBusy) {
+    if (!restartCursorCdpBtn) return;
+    restartCursorPending = isBusy;
+    restartCursorCdpBtn.disabled = isBusy;
+    restartCursorCdpBtn.classList.toggle('is-busy', isBusy);
+
+    const label = restartCursorCdpBtn.querySelector('.settings-option-label');
+    if (label) {
+        label.textContent = isBusy ? 'Restarting...' : DEFAULT_RESTART_CURSOR_LABEL;
+    }
+}
+
+async function restartCursorWithCdp() {
+    if (!restartCursorCdpBtn || restartCursorPending) return;
+
+    setRestartCursorButtonState(true);
+    settingsDropdown.classList.remove('open');
+    statusDot.classList.remove('connected');
+    statusDot.classList.add('disconnected');
+    statusText.textContent = 'Restarting Cursor...';
+
+    try {
+        const res = await fetchWithAuth('/restart-cursor-cdp', { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok || data.success === false) {
+            throw new Error(data.error || data.reason || 'Failed to restart Cursor with CDP');
+        }
+
+        setTimeout(fetchAppState, 1000);
+        setTimeout(checkChatStatus, 2500);
+        setTimeout(loadSnapshot, 4000);
+        setTimeout(loadSnapshot, 8000);
+    } catch (error) {
+        console.error('Restart Cursor CDP error:', error);
+        statusText.textContent = 'Restart failed';
+        setTimeout(() => updateStatus(!!(ws && ws.readyState === WebSocket.OPEN)), 2000);
+    } finally {
+        setRestartCursorButtonState(false);
+    }
+}
 
 function setActiveChatTitle(title) {
     const normalizedTitle = normalizeChatTitle(title);
@@ -753,6 +822,7 @@ function scheduleRender() {
 function renderSnapshot(data) {
     chatIsOpen = true;
     hasSnapshotLoaded = true;
+    renderHeaderChatTabs(data.chatTabs, data.activeChatTitle);
 
     setHomeScreen(false);
     if (data.activeChatTitle) {
@@ -1283,8 +1353,7 @@ ${snapshotRootScope} [data-message-kind="tool"] {
     }
 
     // --- HTML UPDATE (skip if unchanged to prevent text jittering) ---
-    const snapshotTabsHtml = buildSnapshotTabsHtml(data.chatTabs, data.activeChatTitle);
-    const renderedHtml = `${snapshotTabsHtml}${data.html}`;
+    const renderedHtml = data.html;
     const htmlHash = fastHash(renderedHtml);
     if (htmlHash !== lastRenderedHtmlHash) {
         lastRenderedHtmlHash = htmlHash;
@@ -1824,7 +1893,14 @@ settingsBtn.addEventListener('click', (e) => {
 
 settingsDropdown.addEventListener('click', (e) => {
     const option = e.target.closest('.settings-option');
-    if (option) {
+    if (!option) return;
+
+    if (option === restartCursorCdpBtn) {
+        restartCursorWithCdp();
+        return;
+    }
+
+    if (option.dataset.themeValue) {
         applyTheme(option.dataset.themeValue);
         settingsDropdown.classList.remove('open');
     }
@@ -2046,7 +2122,11 @@ async function checkChatStatus() {
 // --- Empty State (No Chat Open) ---
 function showEmptyState() {
     hasSnapshotLoaded = false;
+    lastRenderedHash = '';
+    lastRenderedHtmlHash = '';
+    pendingSnapshot = null;
     setActiveChatTitle('');
+    renderHeaderChatTabs([], '');
     renderHomeShell();
     setHomeScreen(true);
     updateWorkspaceChrome({ snapshotReady: false });
