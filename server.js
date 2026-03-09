@@ -119,6 +119,7 @@ const SERVER_PORT = Number(process.env.PORT || 3000);
 const APP_PASSWORD = process.env.APP_PASSWORD || 'Cursor';
 const AUTH_COOKIE_NAME = 'cr_auth_token';
 const AUTO_LAUNCH_cursor = process.env.CR_SKIP_AUTO_LAUNCH !== '1';
+const FORCE_VISIBLE_CURSOR = process.env.CR_VISIBLE_CURSOR === '1';
 // Note: hashString is defined later, so we'll initialize the token inside createServer or use a simple string for now.
 let AUTH_TOKEN = 'cr_default_token';
 
@@ -509,7 +510,7 @@ function buildCursorExpression(body) {
 }
 
 async function evaluateCursor(cdp, body, {
-    accept = (value) => value !== undefined && value !== null,
+    accept = (value) => value !== undefined && value !== null && !value?.error,
     awaitPromise = true,
     returnByValue = true
 } = {}) {
@@ -819,6 +820,9 @@ async function launchcursorWithCDP() {
         }
 
         console.log(`Opening Cursor on workspace: ${targetWorkspace}`);
+        if (FORCE_VISIBLE_CURSOR) {
+            console.log('Cursor launch mode: visible window');
+        }
 
         // Step 3: Launch Cursor - use multiple strategies
         let launched = false;
@@ -831,7 +835,7 @@ async function launchcursorWithCDP() {
             ], {
                 detached: true,
                 stdio: 'ignore',
-                windowsHide: true
+                windowsHide: !FORCE_VISIBLE_CURSOR
             });
 
             // Listen for quick exit (bad option rejection)
@@ -1648,21 +1652,96 @@ async function getDropdownOptions(cdp, kind) {
         await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
 
         const current = kind === 'model' ? (__cr.getModelText() || 'Unknown') : (__cr.getModeText() || 'Unknown');
-        let menus = __cr.findMenuContainers();
-        const matchingMenus = menus.filter(menu => __cr.textOf(menu).toLowerCase().includes(current.toLowerCase()));
-        if (matchingMenus.length) menus = matchingMenus;
+        const normalizeText = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+        const menus = __cr.findMenuContainers();
 
-        const options = __cr.getMenuItemTexts(menus)
-            .filter(text => text.length <= 100)
-            .slice(0, 50);
-        const normalizedOptions = options.length
-            ? options
-            : (current && current !== 'Unknown' ? [current] : []);
+        let normalizedOptions;
+        let searchPlaceholder = '';
+        let autoAvailable = false;
+        let autoEnabled = false;
+        let autoLabel = 'Auto';
+        let autoDescription = '';
+
+        if (kind === 'model') {
+            const searchInput = Array.from(document.querySelectorAll('input, textarea, [role="textbox"]')).find(el => {
+                if (!__cr.isVisible(el)) return false;
+                const placeholder = normalizeText(el.getAttribute('placeholder') || el.getAttribute('aria-label') || '');
+                return /search/i.test(placeholder);
+            });
+            searchPlaceholder = searchInput
+                ? normalizeText(searchInput.getAttribute('placeholder') || searchInput.getAttribute('aria-label') || '')
+                : '';
+
+            const autoCandidate = Array.from(document.querySelectorAll('button, [role="button"], [role="menuitem"], [role="option"], label, div')).find(el => {
+                if (!__cr.isVisible(el)) return false;
+                const text = normalizeText(__cr.textOf(el));
+                return /^auto\\b/i.test(text) && /recommended|balanced|quality|speed|task/i.test(text);
+            });
+
+            if (autoCandidate) {
+                const autoText = normalizeText(__cr.textOf(autoCandidate));
+                autoAvailable = true;
+                autoEnabled = /auto/i.test(current);
+                autoLabel = 'Auto';
+                autoDescription = normalizeText(autoText.replace(/^auto\\b/i, ''));
+
+                const switchEl =
+                    autoCandidate.querySelector('[role="switch"], input[type="checkbox"], [aria-checked], [aria-pressed]') ||
+                    autoCandidate.closest('[role="switch"], [aria-checked], [aria-pressed]');
+                if (switchEl) {
+                    const ariaChecked = switchEl.getAttribute?.('aria-checked');
+                    const ariaPressed = switchEl.getAttribute?.('aria-pressed');
+                    if (ariaChecked != null) autoEnabled = ariaChecked === 'true';
+                    else if (ariaPressed != null) autoEnabled = ariaPressed === 'true';
+                    else if (typeof switchEl.checked === 'boolean') autoEnabled = !!switchEl.checked;
+                }
+            } else if (/auto/i.test(current)) {
+                autoAvailable = true;
+                autoEnabled = true;
+                autoDescription = 'Balanced quality and speed, recommended for most tasks';
+            }
+
+            const rawOptions = __cr.getMenuItemTexts(menus)
+                .map(normalizeText)
+                .filter(text => text && text.length <= 100)
+                .filter(text => !/^search models?$/i.test(text))
+                .filter(text => !/^search$/i.test(text))
+                .filter(text => !/^auto\\b/i.test(text))
+                .filter(text => !/balanced quality and speed/i.test(text))
+                .filter(text => !/recommended for most tasks/i.test(text))
+                .slice(0, 80);
+
+            normalizedOptions = rawOptions.length
+                ? Array.from(new Set(rawOptions))
+                : (current && current !== 'Unknown' && !/auto/i.test(current) ? [current] : []);
+        } else {
+            let scopedMenus = menus;
+            const matchingMenus = menus.filter(menu => __cr.textOf(menu).toLowerCase().includes(current.toLowerCase()));
+            if (matchingMenus.length) scopedMenus = matchingMenus;
+
+            const options = __cr.getMenuItemTexts(scopedMenus)
+                .map(normalizeText)
+                .filter(text => text && text.length <= 100)
+                .slice(0, 50);
+            normalizedOptions = options.length
+                ? options
+                : (current && current !== 'Unknown' ? [current] : []);
+        }
 
         document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
         document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', bubbles: true }));
 
-        return { success: true, kind, current, options: normalizedOptions };
+        return {
+            success: true,
+            kind,
+            current,
+            options: normalizedOptions,
+            searchPlaceholder,
+            autoAvailable,
+            autoEnabled,
+            autoLabel,
+            autoDescription
+        };
     `, {
         accept: (value) => value && typeof value === 'object'
     });
