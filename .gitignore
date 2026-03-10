@@ -9,6 +9,7 @@ log.old.txt
 server_log.txt
 server-live*.log
 npm-debug.log*
+realtime-server.pid
 yarn-debug.log*
 yarn-error.log*
 
