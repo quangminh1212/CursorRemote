@@ -1,4 +1,4 @@
-import { evaluateCursor } from '../cdp-eval.js';
+import { evaluateCursor, clickAtPoint } from '../cdp-eval.js';
 import { createTraceId, logTraceStep, summarizeLogText, summarizeLogValue, summarizeActionResultForLog, summarizeDropdownStateForLog } from '../logger.js';
 import { sleep } from '../system-utils.js';
 

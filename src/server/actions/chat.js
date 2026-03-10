@@ -1,5 +1,5 @@
-import { evaluateCursor } from '../cdp-eval.js';
-import { createTraceId, logTraceStep, summarizeLogText, summarizeActionResultForLog } from '../logger.js';
+import { evaluateCursor, clickAtPoint } from '../cdp-eval.js';
+import { createTraceId, logTraceStep, summarizeLogText, summarizeLogValue, summarizeActionResultForLog } from '../logger.js';
 import { sleep } from '../system-utils.js';
 
 // Start New Chat - Click the + button at the TOP of the chat window (NOT the context/media + button)
