@@ -96,7 +96,7 @@ const FILE_UPLOAD_SNAPSHOT_DELAYS = [250, 700];
 const ACTION_STATUS_RECHECK_DELAY = 450;
 
 function setTextContent(element, value) {
-    if (element) element.textContent = value;
+    if (element && element.textContent !== value) element.textContent = value;
 }
 
 function getComposerPlaceholder() {
@@ -510,12 +510,20 @@ function setHasChatTabs(hasTabs) {
     updateComposerPlaceholder();
 }
 
+let _lastTabsSignature = '';
+
 function renderHeaderChatTabs(tabs = [], activeTitle = '') {
     if (!headerChatTabs) {
         lastChatTabs = [];
+        _lastTabsSignature = '';
         setHasChatTabs(false);
         return;
     }
+
+    // Skip re-render if tabs haven't changed (prevents UI jitter)
+    const sig = getChatTabsSignature(tabs, activeTitle);
+    if (sig === _lastTabsSignature) return;
+    _lastTabsSignature = sig;
 
     const normalizedTabs = normalizeSnapshotChatTabs(tabs, activeTitle);
     lastChatTabs = normalizedTabs.slice();

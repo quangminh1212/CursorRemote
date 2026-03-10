@@ -549,6 +549,7 @@ body {
 .chat-content {
     min-height: 100%;
     padding: 8px 12px;
+    contain: content;
 }
 
 .snapshot-chat-tabs {
@@ -699,7 +700,7 @@ body {
     color: inherit;
 }
 
-.composer-alert-card > :last-child {
+.composer-alert-card> :last-child {
     margin-bottom: 0;
 }
 
@@ -835,13 +836,13 @@ body {
     transform: scale(0.96);
 }
 
-.toolbar-chip > .toolbar-chip-caret {
+.toolbar-chip>.toolbar-chip-caret {
     opacity: 0.5;
     flex-shrink: 0;
     transition: transform 0.2s;
 }
 
-.toolbar-chip.open > .toolbar-chip-caret {
+.toolbar-chip.open>.toolbar-chip-caret {
     transform: rotate(180deg);
 }
 
@@ -2058,7 +2059,8 @@ body.home-screen .fab {
     }
 }
 
-@media (max-width: 340px), (max-height: 430px) {
+@media (max-width: 340px),
+(max-height: 430px) {
     .input-toolbar {
         position: relative;
     }
@@ -2411,7 +2413,7 @@ body {
 }
 
 .settings-option-label,
-.settings-option > span {
+.settings-option>span {
     font-size: inherit;
     line-height: inherit;
 }
@@ -3451,8 +3453,8 @@ body.home-screen #modeText {
     text-overflow: clip;
 }
 
-body.home-screen #modeBtn > .toolbar-chip-caret,
-body.home-screen #modelBtn > .toolbar-chip-caret {
+body.home-screen #modeBtn>.toolbar-chip-caret,
+body.home-screen #modelBtn>.toolbar-chip-caret {
     order: 3;
     width: 10px;
     height: 10px;
@@ -3625,7 +3627,7 @@ body.home-screen .mode-dropdown-option {
     cursor: pointer;
 }
 
-body.home-screen .mode-dropdown-option + .mode-dropdown-option {
+body.home-screen .mode-dropdown-option+.mode-dropdown-option {
     margin-top: 2px;
 }
 
@@ -3962,7 +3964,7 @@ body:not(.home-screen) .mode-dropdown-option {
     cursor: pointer;
 }
 
-body:not(.home-screen) .mode-dropdown-option + .mode-dropdown-option {
+body:not(.home-screen) .mode-dropdown-option+.mode-dropdown-option {
     margin-top: 1px;
 }
 
@@ -4290,8 +4292,8 @@ body:not(.home-screen) #modeText {
     text-overflow: clip;
 }
 
-body:not(.home-screen) #modeBtn > .toolbar-chip-caret,
-body:not(.home-screen) #modelBtn > .toolbar-chip-caret {
+body:not(.home-screen) #modeBtn>.toolbar-chip-caret,
+body:not(.home-screen) #modelBtn>.toolbar-chip-caret {
     order: 3;
     width: 9px;
     height: 9px;
