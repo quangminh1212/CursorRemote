@@ -3,9 +3,9 @@ import { getJson, sleep } from './system-utils.js';
 import { getOrderedContexts } from './cdp-eval.js';
 
 // Find Cursor CDP endpoint (with identity verification to avoid connecting to Antigravity or other Electron apps)
-async function discoverCDP() {
+async function discoverCDP(ports = [9000, 9001, 9002, 9003]) {
     const errors = [];
-    for (const port of PORTS) {
+    for (const port of ports) {
         try {
             // Step 1: Verify this CDP port belongs to Cursor via /json/version
             let isCursorApp = false;
