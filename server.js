@@ -85,6 +85,177 @@ function sanitizeLogUrl(rawUrl = '') {
     }
 }
 
+const ACTION_TRACE_LOG_ENABLED = process.env.CR_ACTION_TRACE_LOG !== '0';
+let actionTraceCounter = 0;
+
+function summarizeLogText(value, maxLength = 120) {
+    const normalized = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!normalized) return '';
+    return normalized.length > maxLength
+        ? `${normalized.slice(0, Math.max(0, maxLength - 1))}…`
+        : normalized;
+}
+
+function summarizeLogValue(value, depth = 0) {
+    if (value === null || value === undefined) return value;
+    if (typeof value === 'string') return summarizeLogText(value, depth === 0 ? 180 : 120);
+    if (typeof value === 'number' || typeof value === 'boolean') return value;
+    if (value instanceof Error) {
+        return {
+            name: value.name,
+            message: summarizeLogText(value.message || String(value), 180)
+        };
+    }
+    if (Array.isArray(value)) {
+        const items = value.slice(0, 6).map((item) => summarizeLogValue(item, depth + 1));
+        if (value.length > 6) items.push(`…(+${value.length - 6} more)`);
+        return items;
+    }
+    if (typeof value === 'object') {
+        if (depth >= 2) {
+            return `[object ${value.constructor?.name || 'Object'}]`;
+        }
+        const entries = Object.entries(value).slice(0, 10).map(([key, entryValue]) => [key, summarizeLogValue(entryValue, depth + 1)]);
+        const summarized = Object.fromEntries(entries);
+        const hiddenKeys = Object.keys(value).length - entries.length;
+        if (hiddenKeys > 0) summarized.__moreKeys = hiddenKeys;
+        return summarized;
+    }
+    return String(value);
+}
+
+function createTraceId(prefix = 'trace') {
+    actionTraceCounter += 1;
+    return `${prefix}-${Date.now().toString(36)}-${actionTraceCounter.toString(36)}`;
+}
+
+function logTraceStep(traceId, step, details = null) {
+    if (!ACTION_TRACE_LOG_ENABLED || !traceId) return;
+    if (details && typeof details === 'object' && Object.keys(details).length > 0) {
+        console.log(`[TRACE ${traceId}] ${step}`, summarizeLogValue(details));
+        return;
+    }
+    if (details !== null && details !== undefined) {
+        console.log(`[TRACE ${traceId}] ${step}`, summarizeLogValue(details));
+        return;
+    }
+    console.log(`[TRACE ${traceId}] ${step}`);
+}
+
+function summarizeDropdownStateForLog(state) {
+    if (!state || typeof state !== 'object') return state;
+    return {
+        kind: state.kind || undefined,
+        current: summarizeLogText(state.current || '', 72) || undefined,
+        optionCount: Array.isArray(state.options) ? state.options.length : 0,
+        toggleCount: Array.isArray(state.toggles) ? state.toggles.length : 0,
+        compactAuto: typeof state.compactAuto === 'boolean' ? state.compactAuto : undefined,
+        footerLabel: summarizeLogText(state.footerLabel || '', 64) || undefined,
+        targets: Array.isArray(state.targets) ? state.targets.length : 0,
+        menuAlreadyOpen: !!state.menuAlreadyOpen,
+        error: state.error || undefined
+    };
+}
+
+function summarizeAppStateForLog(state) {
+    if (!state || typeof state !== 'object') return state;
+    return {
+        mode: summarizeLogText(state.mode || '', 40) || undefined,
+        model: summarizeLogText(state.model || '', 56) || undefined,
+        composerStatus: summarizeLogText(state.composerStatus || '', 40) || undefined,
+        isRunning: !!state.isRunning,
+        hasChat: !!state.hasChat,
+        hasMessages: !!state.hasMessages,
+        editorFound: !!state.editorFound,
+        activeChatTitle: summarizeLogText(state.activeChatTitle || '', 96) || undefined,
+        chatTabCount: Array.isArray(state.chatTabs) ? state.chatTabs.length : 0
+    };
+}
+
+function summarizeSnapshotForLog(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') return snapshot;
+    return {
+        activeChatTitle: summarizeLogText(snapshot.activeChatTitle || '', 96) || undefined,
+        chatTabCount: Array.isArray(snapshot.chatTabs) ? snapshot.chatTabs.length : 0,
+        htmlSize: snapshot.stats?.htmlSize || snapshot.html?.length || 0,
+        nodes: snapshot.stats?.nodes || 0,
+        scrollPercent: typeof snapshot.scrollInfo?.scrollPercent === 'number'
+            ? Number(snapshot.scrollInfo.scrollPercent.toFixed(4))
+            : undefined,
+        hash: snapshot.hash || undefined
+    };
+}
+
+function summarizeActionResultForLog(result) {
+    if (!result || typeof result !== 'object') return summarizeLogValue(result);
+    return {
+        success: result.success ?? result.ok ?? undefined,
+        error: summarizeLogText(result.error || result.reason || '', 160) || undefined,
+        currentMode: summarizeLogText(result.currentMode || '', 40) || undefined,
+        currentModel: summarizeLogText(result.currentModel || '', 56) || undefined,
+        title: summarizeLogText(result.title || '', 96) || undefined,
+        method: summarizeLogText(result.method || '', 48) || undefined,
+        optionCount: Array.isArray(result.options) ? result.options.length : Array.isArray(result.available) ? result.available.length : undefined,
+        toggleCount: Array.isArray(result.toggles) ? result.toggles.length : undefined,
+        chatCount: Array.isArray(result.chats) ? result.chats.length : undefined,
+        alreadySet: result.alreadySet === true ? true : undefined,
+        alreadyActive: result.alreadyActive === true ? true : undefined
+    };
+}
+
+function summarizeChangedKeys(previous = {}, next = {}) {
+    const candidateKeys = new Set([
+        ...Object.keys(previous || {}),
+        ...Object.keys(next || {})
+    ]);
+
+    return [...candidateKeys].filter((key) => {
+        const before = JSON.stringify(summarizeLogValue(previous?.[key]));
+        const after = JSON.stringify(summarizeLogValue(next?.[key]));
+        return before !== after;
+    }).slice(0, 12);
+}
+
+function rememberAppStateSample(appState) {
+    if (!appState || typeof appState !== 'object') return;
+    lastAppState = appState;
+    lastAppStateSampledAt = Date.now();
+}
+
+function hasFreshAppStateSample(maxAgeMs = APP_STATE_CACHE_MAX_AGE_MS) {
+    return !!(
+        lastAppState &&
+        typeof lastAppState === 'object' &&
+        lastAppStateSampledAt > 0 &&
+        (Date.now() - lastAppStateSampledAt) <= maxAgeMs
+    );
+}
+
+async function getAppStateForApi(cdp, { maxAgeMs = APP_STATE_CACHE_MAX_AGE_MS } = {}) {
+    if (hasFreshAppStateSample(maxAgeMs)) {
+        return { state: lastAppState, source: 'cache' };
+    }
+
+    if (appStateApiRefreshInFlight) {
+        const state = await appStateApiRefreshInFlight;
+        return { state, source: 'coalesced' };
+    }
+
+    const request = (async () => {
+        const state = await getAppState(cdp);
+        rememberAppStateSample(state);
+        return state;
+    })().finally(() => {
+        if (appStateApiRefreshInFlight === request) {
+            appStateApiRefreshInFlight = null;
+        }
+    });
+
+    appStateApiRefreshInFlight = request;
+    const state = await request;
+    return { state, source: 'live' };
+}
+
 // Intercept console methods Ã¢â€ â€™ write to both terminal AND log.txt
 const _origLog = console.log.bind(console);
 const _origWarn = console.warn.bind(console);
@@ -146,6 +317,7 @@ console.log('========================================');
 const PORTS = [9000, 9001, 9002, 9003];
 const PRIMARY_CDP_PORT = PORTS[0];
 const POLL_INTERVAL = 500; // 500ms for smoother updates
+const APP_STATE_CACHE_MAX_AGE_MS = 1500;
 const SERVER_PORT = Number(process.env.PORT || 3000);
 const APP_PASSWORD = process.env.APP_PASSWORD || 'Cursor';
 const AUTH_COOKIE_NAME = 'cr_auth_token';
@@ -159,6 +331,8 @@ let lastSnapshot = null;
 let lastSnapshotHash = null;
 let lastAppState = null;
 let lastAppStateHash = null;
+let lastAppStateSampledAt = 0;
+let appStateApiRefreshInFlight = null;
 let cursorLaunchPromise = null;
 
 const CURSOR_UI_HELPERS = String.raw`
@@ -276,11 +450,68 @@ const __cr = (() => {
         .trim()
         .toLowerCase();
 
+    const hasExplicitChatTitleTruncation = (value) => /(?:\u2026|\.{3})\s*$/u.test(String(value || '').trim());
+
     const chatTitlesMatch = (left, right) => {
         const a = normalizeChatTitleMatchKey(left);
         const b = normalizeChatTitleMatchKey(right);
         if (!a || !b) return false;
-        return a === b || a.includes(b) || b.includes(a);
+        if (a === b) return true;
+        if (hasExplicitChatTitleTruncation(left) && b.startsWith(a) && b.length > a.length) return true;
+        if (hasExplicitChatTitleTruncation(right) && a.startsWith(b) && a.length > b.length) return true;
+        return false;
+    };
+
+    const getChatTabScore = (tab, activeTitle = '') => {
+        const title = normalizeText(tab?.title);
+        if (!title) return -1;
+
+        let score = title.length;
+        if (tab?.active) score += 1000;
+        if (activeTitle) {
+            const normalizedActiveTitle = normalizeText(activeTitle);
+            if (title.toLowerCase() === normalizedActiveTitle.toLowerCase()) score += 240;
+            else if (chatTitlesMatch(title, normalizedActiveTitle)) score += 120;
+        }
+        return score;
+    };
+
+    const normalizeChatTabs = (tabs, activeTitle = '') => {
+        const deduped = [];
+        const resolvedActiveTitle = normalizeText(activeTitle);
+
+        for (const tab of Array.isArray(tabs) ? tabs : []) {
+            const candidate = {
+                title: normalizeText(tab?.title),
+                active: !!tab?.active
+            };
+            if (!candidate.title) continue;
+
+            const existingIndex = deduped.findIndex((item) => item.title.toLowerCase() === candidate.title.toLowerCase());
+            if (existingIndex === -1) {
+                deduped.push(candidate);
+                continue;
+            }
+
+            if (getChatTabScore(candidate, resolvedActiveTitle) > getChatTabScore(deduped[existingIndex], resolvedActiveTitle)) {
+                deduped[existingIndex] = candidate;
+            }
+        }
+
+        let preferredIndex = -1;
+        deduped.forEach((tab, index) => {
+            const isCandidate = !!tab.active || (!!resolvedActiveTitle && chatTitlesMatch(tab.title, resolvedActiveTitle));
+            if (!isCandidate) return;
+
+            if (preferredIndex === -1 || getChatTabScore(tab, resolvedActiveTitle) > getChatTabScore(deduped[preferredIndex], resolvedActiveTitle)) {
+                preferredIndex = index;
+            }
+        });
+
+        return deduped.map((tab, index) => ({
+            ...tab,
+            active: index === preferredIndex
+        }));
     };
 
     const normalizeChatTabElement = (el) => {
@@ -348,7 +579,6 @@ const __cr = (() => {
         const container = findChatTabsContainer();
         if (!container) return [];
 
-        const seen = new Set();
         const tabs = getChatTabElements(container)
             .map((el) => {
                 const title = normalizeText(el.getAttribute?.('aria-label') || textOf(el));
@@ -356,8 +586,6 @@ const __cr = (() => {
 
                 const lower = title.toLowerCase();
                 if (lower === 'more actions' || lower === 'more actions...') return null;
-                if (seen.has(lower)) return null;
-                seen.add(lower);
 
                 return {
                     title,
@@ -367,15 +595,7 @@ const __cr = (() => {
             .filter(Boolean);
 
         const activeTitle = tabs.find(tab => tab.active)?.title || '';
-        if (!activeTitle) return tabs;
-
-        const normalizedActiveTitle = activeTitle.toLowerCase();
-        return tabs.filter((tab) => {
-            if (tab.active) return true;
-            const normalizedTitle = tab.title.toLowerCase();
-            if (normalizedTitle === normalizedActiveTitle) return false;
-            return !(normalizedTitle.length < normalizedActiveTitle.length && chatTitlesMatch(tab.title, activeTitle));
-        });
+        return normalizeChatTabs(tabs, activeTitle);
     };
 
     const getActiveChatTitle = () => {
@@ -417,6 +637,17 @@ const __cr = (() => {
         return findComposerBar()?.getBoundingClientRect?.() || findEditor()?.getBoundingClientRect?.() || null;
     };
 
+    const POPUP_CONTAINER_SELECTOR = '[role="menu"], [role="dialog"], [role="listbox"], .ui-menu__content, .context-view, [data-radix-popper-content-wrapper], .monaco-menu-container, .monaco-select-box-dropdown-container';
+
+    const isInsidePopupContainer = (el) => {
+        if (!el?.closest) return false;
+        const popup = el.closest(POPUP_CONTAINER_SELECTOR);
+        if (!popup || !isVisible(popup)) return false;
+
+        const composer = findComposerBar();
+        return !composer || !popup.contains(composer);
+    };
+
     const scoreComposerChipCandidate = (el, {
         matcher,
         excludeMatcher = null,
@@ -429,6 +660,10 @@ const __cr = (() => {
         horizontalWeight = 0.03
     } = {}) => {
         if (!el || !isVisible(el)) return -Infinity;
+        if (isInsidePopupContainer(el)) return -Infinity;
+
+        const role = String(el.getAttribute?.('role') || '').toLowerCase();
+        if (role === 'menuitem' || role === 'option') return -Infinity;
 
         const rect = el.getBoundingClientRect();
         const leafText = getBestLeafTextMatch(el, matcher, { maxLength: maxTextLength });
@@ -1929,8 +2164,12 @@ async function captureSnapshot(cdp) {
 }
 
 // Inject message into Cursor
-async function injectMessage(cdp, text) {
+async function injectMessage(cdp, text, traceId = null) {
     const safeText = JSON.stringify(text);
+    logTraceStep(traceId, 'injectMessage.request', {
+        textLength: String(text || '').length,
+        preview: summarizeLogText(text, 120)
+    });
     const prepared = await evaluateCursor(cdp, `
         const editor = __cr.findEditor();
         if (!editor) return { ok: false, error: 'editor_not_found' };
@@ -1956,8 +2195,10 @@ async function injectMessage(cdp, text) {
     });
 
     if (!prepared?.ok) {
+        logTraceStep(traceId, 'injectMessage.prepareFailed', summarizeActionResultForLog(prepared));
         return prepared || { ok: false, reason: 'prepare_failed' };
     }
+    logTraceStep(traceId, 'injectMessage.prepared', summarizeLogValue(prepared));
 
     try {
         await cdp.call('Input.dispatchKeyEvent', {
@@ -2009,6 +2250,7 @@ async function injectMessage(cdp, text) {
     let method = 'cdp_enter';
 
     if (finalState?.editorTextAfter && finalState.sendButton) {
+        logTraceStep(traceId, 'injectMessage.mouseFallback', summarizeLogValue(finalState));
         try {
             await cdp.call('Input.dispatchMouseEvent', {
                 type: 'mouseMoved',
@@ -2046,13 +2288,15 @@ async function injectMessage(cdp, text) {
         }
     }
 
-    return {
+    const finalResult = {
         ok: !finalState?.editorTextAfter,
         method,
         editorTextAfter: finalState?.editorTextAfter || '',
         hasMessagesAfter: !!finalState?.hasMessagesAfter,
         busyAfter: !!finalState?.busyAfter
     };
+    logTraceStep(traceId, 'injectMessage.complete', summarizeActionResultForLog(finalResult));
+    return finalResult;
 }
 
 // Inject file into Cursor via CDP file chooser
@@ -2207,14 +2451,22 @@ function getModeRequestCandidates(mode) {
 }
 
 // Set functionality mode (Fast vs Planning)
-async function setMode(cdp, mode) {
+async function setMode(cdp, mode, traceId = null) {
     const targetMode = String(mode || '').trim();
     if (!targetMode) return { error: 'Invalid mode' };
     const requestedCandidates = getModeRequestCandidates(targetMode);
+    logTraceStep(traceId, 'setMode.request', {
+        targetMode,
+        requestedCandidates
+    });
     const verifyModeState = async (fallbackAvailable = []) => {
-        const verifiedState = await getDropdownOptions(cdp, 'mode');
+        const verifiedState = await getDropdownOptions(cdp, 'mode', traceId);
         const verifiedCurrent = String(verifiedState?.current || '').trim();
         if (verifiedCurrent && requestedCandidates.some(candidate => verifiedCurrent.toLowerCase() === candidate.toLowerCase())) {
+            logTraceStep(traceId, 'setMode.verified', {
+                verifiedCurrent,
+                availableCount: Array.isArray(verifiedState?.options) ? verifiedState.options.length : fallbackAvailable.length
+            });
             return {
                 success: true,
                 currentMode: verifiedCurrent,
@@ -2222,6 +2474,10 @@ async function setMode(cdp, mode) {
             };
         }
 
+        logTraceStep(traceId, 'setMode.verifyMismatch', {
+            verifiedCurrent,
+            fallbackAvailableCount: Array.isArray(fallbackAvailable) ? fallbackAvailable.length : 0
+        });
         return {
             error: 'mode_apply_mismatch',
             currentMode: verifiedCurrent || 'Unknown',
@@ -2229,13 +2485,16 @@ async function setMode(cdp, mode) {
         };
     };
 
-    const menuState = await getDropdownOptions(cdp, 'mode');
+    const menuState = await getDropdownOptions(cdp, 'mode', traceId);
+    logTraceStep(traceId, 'setMode.menuState', summarizeDropdownStateForLog(menuState));
     const currentMode = String(menuState?.current || '').trim();
     if (currentMode && requestedCandidates.some((candidate) => currentMode.toLowerCase() === candidate.toLowerCase())) {
+        logTraceStep(traceId, 'setMode.alreadySet', { currentMode });
         return { success: true, alreadySet: true, currentMode };
     }
 
     if (!menuState?.buttonPoint) {
+        logTraceStep(traceId, 'setMode.buttonMissing', summarizeDropdownStateForLog(menuState));
         return { error: 'mode_button_not_found' };
     }
 
@@ -2243,6 +2502,10 @@ async function setMode(cdp, mode) {
         ? menuState.targets.find((target) => requestedCandidates.some((candidate) => String(target?.title || '').toLowerCase() === candidate.toLowerCase()))
         : null;
     if (!directTarget) {
+        logTraceStep(traceId, 'setMode.targetMissing', {
+            available: menuState.options || [],
+            requestedCandidates
+        });
         return {
             error: 'mode_option_not_found',
             currentMode: currentMode || 'Unknown',
@@ -2250,6 +2513,11 @@ async function setMode(cdp, mode) {
         };
     }
 
+    logTraceStep(traceId, 'setMode.directClick', {
+        target: directTarget.title,
+        x: directTarget.x,
+        y: directTarget.y
+    });
     await clickAtPoint(cdp, menuState.buttonPoint.x, menuState.buttonPoint.y);
     await new Promise((resolve) => setTimeout(resolve, 260));
     await clickAtPoint(cdp, directTarget.x, directTarget.y);
@@ -2257,6 +2525,7 @@ async function setMode(cdp, mode) {
 
     const verified = await verifyModeState(menuState.options || []);
     if (verified?.success) return verified;
+    logTraceStep(traceId, 'setMode.fallbackNeeded', summarizeActionResultForLog(verified));
 
     const fallback = await evaluateCursor(cdp, `
         const requestedMode = ${JSON.stringify(targetMode)};
@@ -2309,10 +2578,12 @@ async function setMode(cdp, mode) {
     });
 
     if (fallback?.success) {
+        logTraceStep(traceId, 'setMode.fallbackDomSuccess', summarizeActionResultForLog(fallback));
         const fallbackVerified = await verifyModeState(fallback.available || []);
         if (fallbackVerified?.success) return fallbackVerified;
     }
 
+    logTraceStep(traceId, 'setMode.complete', summarizeActionResultForLog(fallback || verified));
     return fallback || verified;
 }
 
@@ -2411,9 +2682,12 @@ async function remoteScroll(cdp, { scrollTop, scrollPercent }) {
 }
 
 // Set AI Model
-async function setModel(cdp, modelName) {
+async function setModel(cdp, modelName, traceId = null) {
     const targetModel = String(modelName || '').trim();
     if (!targetModel) return { error: 'Invalid model' };
+    logTraceStep(traceId, 'setModel.request', {
+        targetModel
+    });
 
     const result = await evaluateCursor(cdp, `
         const requestedModel = ${JSON.stringify(targetModel)};
@@ -2575,12 +2849,16 @@ async function setModel(cdp, modelName) {
     });
 
     if (result?.success) {
+        logTraceStep(traceId, 'setModel.domSuccess', summarizeActionResultForLog(result));
         return result;
     }
 
-    const menuState = await getDropdownOptions(cdp, 'model');
+    logTraceStep(traceId, 'setModel.domFallbackNeeded', summarizeActionResultForLog(result));
+    const menuState = await getDropdownOptions(cdp, 'model', traceId);
+    logTraceStep(traceId, 'setModel.menuState', summarizeDropdownStateForLog(menuState));
     const currentModel = String(menuState?.current || result?.currentModel || '').trim();
     if (currentModel && currentModel.toLowerCase() === targetModel.toLowerCase()) {
+        logTraceStep(traceId, 'setModel.alreadySet', { currentModel });
         return { success: true, alreadySet: true, currentModel };
     }
 
@@ -2590,6 +2868,10 @@ async function setModel(cdp, modelName) {
         : targets.find((target) => target.kind === 'option' && String(target.title || '').trim().toLowerCase() === targetModel.toLowerCase());
 
     if (menuState?.buttonPoint && !targetEntry) {
+        logTraceStep(traceId, 'setModel.searchFallback', {
+            targetModel,
+            optionCount: Array.isArray(menuState?.options) ? menuState.options.length : 0
+        });
         await clickAtPoint(cdp, menuState.buttonPoint.x, menuState.buttonPoint.y);
         await new Promise((resolve) => setTimeout(resolve, 260));
 
@@ -2647,6 +2929,7 @@ async function setModel(cdp, modelName) {
         });
 
         if (searchFallback?.success) {
+            logTraceStep(traceId, 'setModel.searchFallbackSuccess', summarizeActionResultForLog(searchFallback));
             return {
                 success: true,
                 currentModel: searchFallback.currentModel || targetModel,
@@ -2656,23 +2939,35 @@ async function setModel(cdp, modelName) {
     }
 
     if (!menuState?.buttonPoint || !targetEntry) {
+        logTraceStep(traceId, 'setModel.targetMissing', {
+            targetModel,
+            targetFound: !!targetEntry,
+            buttonPoint: !!menuState?.buttonPoint
+        });
         return result;
     }
 
+    logTraceStep(traceId, 'setModel.directClick', {
+        target: targetEntry.title || targetModel,
+        x: targetEntry.x,
+        y: targetEntry.y
+    });
     await clickAtPoint(cdp, menuState.buttonPoint.x, menuState.buttonPoint.y);
     await new Promise((resolve) => setTimeout(resolve, 260));
     await clickAtPoint(cdp, targetEntry.x, targetEntry.y);
     await new Promise((resolve) => setTimeout(resolve, 320));
 
-    const refreshedMenuState = await getDropdownOptions(cdp, 'model');
-    return {
+    const refreshedMenuState = await getDropdownOptions(cdp, 'model', traceId);
+    const finalResult = {
         success: true,
         currentModel: refreshedMenuState.current || targetModel,
         available: refreshedMenuState.options || []
     };
+    logTraceStep(traceId, 'setModel.complete', summarizeActionResultForLog(finalResult));
+    return finalResult;
 }
 
-async function setModelToggle(cdp, toggleKey, enabled) {
+async function setModelToggle(cdp, toggleKey, enabled, traceId = null) {
     const requestedToggle = String(toggleKey || '').trim().toLowerCase();
     if (!requestedToggle) return { error: 'Invalid toggle' };
 
@@ -2681,7 +2976,129 @@ async function setModelToggle(cdp, toggleKey, enabled) {
         'max-mode': 'MAX Mode',
         'multi-model': 'Use Multiple Models'
     })[requestedToggle] || toggleKey;
+    logTraceStep(traceId, 'setModelToggle.request', {
+        requestedToggle,
+        toggleLabel,
+        enabled: enabled === undefined ? null : !!enabled
+    });
 
+    const directMenuState = await getDropdownOptions(cdp, 'model', traceId);
+    logTraceStep(traceId, 'setModelToggle.directMenuState', summarizeDropdownStateForLog(directMenuState));
+    const directCurrentModel = String(directMenuState?.current || '').trim();
+    const directCurrentToggle = Array.isArray(directMenuState?.toggles)
+        ? directMenuState.toggles.find((toggle) =>
+            toggle?.key === requestedToggle ||
+            String(toggle?.label || '').trim().toLowerCase() === toggleLabel.toLowerCase()
+        )
+        : null;
+
+    if (
+        requestedToggle === 'auto'
+        && enabled !== undefined
+        && (
+            (!!enabled && /^auto$/i.test(directCurrentModel))
+            || (!enabled && directCurrentModel && !/^auto$/i.test(directCurrentModel))
+        )
+    ) {
+        logTraceStep(traceId, 'setModelToggle.alreadySatisfiedByModel', {
+            directCurrentModel,
+            enabled: !!enabled
+        });
+        return {
+            success: true,
+            toggles: directMenuState.toggles || [],
+            currentModel: directCurrentModel || 'Unknown',
+            options: directMenuState.options || [],
+            searchPlaceholder: directMenuState.searchPlaceholder || '',
+            footerLabel: directMenuState.footerLabel || '',
+            alreadySet: true
+        };
+    }
+
+    if (directCurrentToggle && enabled !== undefined && directCurrentToggle.enabled === !!enabled) {
+        logTraceStep(traceId, 'setModelToggle.alreadySet', {
+            directCurrentModel,
+            toggleKey: directCurrentToggle.key,
+            toggleEnabled: directCurrentToggle.enabled
+        });
+        return {
+            success: true,
+            toggles: directMenuState.toggles || [],
+            currentModel: directCurrentModel || 'Unknown',
+            options: directMenuState.options || [],
+            searchPlaceholder: directMenuState.searchPlaceholder || '',
+            footerLabel: directMenuState.footerLabel || '',
+            alreadySet: true
+        };
+    }
+
+    const directTargetEntry = Array.isArray(directMenuState?.targets)
+        ? directMenuState.targets.find((target) => target.kind === 'toggle' && target.key === requestedToggle)
+        : null;
+
+    if (directMenuState?.buttonPoint && directTargetEntry) {
+        logTraceStep(traceId, 'setModelToggle.directClick', {
+            target: directTargetEntry.title || directTargetEntry.key || requestedToggle,
+            x: directTargetEntry.x,
+            y: directTargetEntry.y
+        });
+        await clickAtPoint(cdp, directMenuState.buttonPoint.x, directMenuState.buttonPoint.y);
+        await new Promise((resolve) => setTimeout(resolve, 240));
+        await clickAtPoint(cdp, directTargetEntry.x, directTargetEntry.y);
+        await new Promise((resolve) => setTimeout(resolve, 320));
+
+        const verifiedDirectMenuState = await getDropdownOptions(cdp, 'model', traceId);
+        const verifiedDirectCurrentModel = String(verifiedDirectMenuState?.current || '').trim();
+        const verifiedDirectToggle = Array.isArray(verifiedDirectMenuState?.toggles)
+            ? verifiedDirectMenuState.toggles.find((toggle) =>
+                toggle?.key === requestedToggle ||
+                String(toggle?.label || '').trim().toLowerCase() === toggleLabel.toLowerCase()
+            )
+            : null;
+
+        if (
+            requestedToggle === 'auto'
+            && enabled !== undefined
+            && (
+                (!!enabled && /^auto$/i.test(verifiedDirectCurrentModel))
+                || (!enabled && verifiedDirectCurrentModel && !/^auto$/i.test(verifiedDirectCurrentModel))
+            )
+        ) {
+            logTraceStep(traceId, 'setModelToggle.directVerifiedByModel', {
+                verifiedDirectCurrentModel,
+                enabled: !!enabled
+            });
+            return {
+                success: true,
+                toggles: verifiedDirectMenuState.toggles || [],
+                currentModel: verifiedDirectCurrentModel || 'Unknown',
+                options: verifiedDirectMenuState.options || [],
+                searchPlaceholder: verifiedDirectMenuState.searchPlaceholder || '',
+                footerLabel: verifiedDirectMenuState.footerLabel || ''
+            };
+        }
+
+        if (verifiedDirectToggle && (enabled === undefined || verifiedDirectToggle.enabled === !!enabled)) {
+            logTraceStep(traceId, 'setModelToggle.directVerifiedByToggle', {
+                verifiedDirectCurrentModel,
+                toggleKey: verifiedDirectToggle.key,
+                toggleEnabled: verifiedDirectToggle.enabled
+            });
+            return {
+                success: true,
+                toggles: verifiedDirectMenuState.toggles || [],
+                currentModel: verifiedDirectCurrentModel || 'Unknown',
+                options: verifiedDirectMenuState.options || [],
+                searchPlaceholder: verifiedDirectMenuState.searchPlaceholder || '',
+                footerLabel: verifiedDirectMenuState.footerLabel || ''
+            };
+        }
+    }
+
+    logTraceStep(traceId, 'setModelToggle.domFallbackNeeded', {
+        requestedToggle,
+        enabled: enabled === undefined ? null : !!enabled
+    });
     const result = await evaluateCursor(cdp, `
         const requestedToggle = ${JSON.stringify(toggleLabel)};
         const desiredEnabled = ${enabled === undefined ? 'null' : JSON.stringify(!!enabled)};
@@ -2767,51 +3184,106 @@ async function setModelToggle(cdp, toggleKey, enabled) {
                 || String(toggle?.label || '').trim().toLowerCase() === requestedToggle.toLowerCase()
             )
             : null;
+        const updatedCurrentModel = String(updatedState.current || __cr.getModelText() || 'Unknown').trim();
+        const autoToggleSatisfied =
+            requestedToggle === 'auto'
+            && (
+                (desiredEnabled === true && /^auto$/i.test(updatedCurrentModel))
+                || (desiredEnabled === false && updatedCurrentModel && !/^auto$/i.test(updatedCurrentModel))
+            );
         document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
         document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', bubbles: true }));
+
+        if (autoToggleSatisfied) {
+            return {
+                success: true,
+                toggles: updatedState.toggles || [],
+                currentModel: updatedCurrentModel || 'Unknown',
+                options: updatedState.options || [],
+                searchPlaceholder: updatedState.searchPlaceholder || '',
+                footerLabel: updatedState.footerLabel || ''
+            };
+        }
 
         if (desiredEnabled !== null && (!updatedToggle || updatedToggle.enabled !== desiredEnabled)) {
             return {
                 error: 'model_toggle_apply_mismatch',
                 toggles: updatedState.toggles || [],
-                currentModel: updatedState.current || __cr.getModelText() || 'Unknown'
+                currentModel: updatedCurrentModel || 'Unknown'
             };
         }
 
         return {
             success: true,
             toggles: updatedState.toggles || [],
-            currentModel: updatedState.current || __cr.getModelText() || 'Unknown'
+            currentModel: updatedState.current || __cr.getModelText() || 'Unknown',
+            options: updatedState.options || [],
+            searchPlaceholder: updatedState.searchPlaceholder || '',
+            footerLabel: updatedState.footerLabel || ''
         };
     `, {
         accept: (value) => value && typeof value === 'object' && !value.error
     });
 
     if (result?.success) {
+        logTraceStep(traceId, 'setModelToggle.domSuccess', summarizeActionResultForLog(result));
         return result;
     }
 
-    const menuState = await getDropdownOptions(cdp, 'model');
+    logTraceStep(traceId, 'setModelToggle.domResult', summarizeActionResultForLog(result));
+    const menuState = await getDropdownOptions(cdp, 'model', traceId);
     const currentToggle = Array.isArray(menuState?.toggles)
         ? menuState.toggles.find((toggle) =>
             toggle?.key === requestedToggle ||
             String(toggle?.label || '').trim().toLowerCase() === toggleLabel.toLowerCase()
         )
         : null;
+    const currentModelState = String(menuState?.current || result?.currentModel || '').trim();
 
-    if (currentToggle && enabled !== undefined && currentToggle.enabled === !!enabled) {
+    if (
+        requestedToggle === 'auto'
+        && enabled !== undefined
+        && (
+            (!!enabled && /^auto$/i.test(currentModelState))
+            || (!enabled && currentModelState && !/^auto$/i.test(currentModelState))
+        )
+    ) {
+        logTraceStep(traceId, 'setModelToggle.verifiedByModelAfterFallback', {
+            currentModelState,
+            enabled: !!enabled
+        });
         return {
             success: true,
             toggles: menuState.toggles || [],
-            currentModel: menuState.current || 'Unknown',
+            currentModel: currentModelState || 'Unknown',
+            options: menuState.options || [],
+            searchPlaceholder: menuState.searchPlaceholder || '',
+            footerLabel: menuState.footerLabel || ''
+        };
+    }
+
+    if (currentToggle && enabled !== undefined && currentToggle.enabled === !!enabled) {
+        logTraceStep(traceId, 'setModelToggle.verifiedByToggleAfterFallback', {
+            currentModelState,
+            toggleKey: currentToggle.key,
+            toggleEnabled: currentToggle.enabled
+        });
+        return {
+            success: true,
+            toggles: menuState.toggles || [],
+            currentModel: currentModelState || 'Unknown',
+            options: menuState.options || [],
+            searchPlaceholder: menuState.searchPlaceholder || '',
+            footerLabel: menuState.footerLabel || '',
             alreadySet: true
         };
     }
 
     if (requestedToggle === 'auto' && enabled === true) {
-        const autoResult = await setModel(cdp, 'Auto');
+        logTraceStep(traceId, 'setModelToggle.autoDelegatingToSetModel');
+        const autoResult = await setModel(cdp, 'Auto', traceId);
         if (autoResult?.success) {
-            const refreshedMenuState = await getDropdownOptions(cdp, 'model');
+            const refreshedMenuState = await getDropdownOptions(cdp, 'model', traceId);
             return {
                 success: true,
                 toggles: refreshedMenuState.toggles || [],
@@ -2825,17 +3297,27 @@ async function setModelToggle(cdp, toggleKey, enabled) {
         : null;
 
     if (menuState?.buttonPoint && targetEntry) {
+        logTraceStep(traceId, 'setModelToggle.coordinateFallback', {
+            target: targetEntry.title || targetEntry.key || requestedToggle,
+            x: targetEntry.x,
+            y: targetEntry.y
+        });
         await clickAtPoint(cdp, menuState.buttonPoint.x, menuState.buttonPoint.y);
         await new Promise((resolve) => setTimeout(resolve, 260));
         await clickAtPoint(cdp, targetEntry.x, targetEntry.y);
         await new Promise((resolve) => setTimeout(resolve, 320));
 
-        const refreshedMenuState = await getDropdownOptions(cdp, 'model');
+        const refreshedMenuState = await getDropdownOptions(cdp, 'model', traceId);
         const refreshedToggle = Array.isArray(refreshedMenuState?.toggles)
             ? refreshedMenuState.toggles.find((toggle) => toggle?.key === requestedToggle)
             : null;
 
         if ((enabled === undefined && refreshedToggle) || (refreshedToggle && refreshedToggle.enabled === !!enabled)) {
+            logTraceStep(traceId, 'setModelToggle.coordinateFallbackVerified', {
+                currentModel: refreshedMenuState.current || result?.currentModel || 'Unknown',
+                toggleKey: refreshedToggle?.key || requestedToggle,
+                toggleEnabled: refreshedToggle?.enabled
+            });
             return {
                 success: true,
                 toggles: refreshedMenuState.toggles || [],
@@ -2844,11 +3326,13 @@ async function setModelToggle(cdp, toggleKey, enabled) {
         }
     }
 
+    logTraceStep(traceId, 'setModelToggle.complete', summarizeActionResultForLog(result));
     return result;
 }
 
-async function getDropdownOptions(cdp, kind) {
+async function getDropdownOptions(cdp, kind, traceId = null) {
     const normalizedKind = kind === 'model' ? 'model' : 'mode';
+    logTraceStep(traceId, 'getDropdownOptions.request', { kind: normalizedKind });
     const buttonState = await evaluateCursor(cdp, `
         const kind = ${JSON.stringify(normalizedKind)};
         const button = kind === 'model' ? __cr.findModelButton() : __cr.findModeButton();
@@ -2882,8 +3366,10 @@ async function getDropdownOptions(cdp, kind) {
         accept: (value) => value && typeof value === 'object'
     });
     if (!buttonState || buttonState.error) {
+        logTraceStep(traceId, 'getDropdownOptions.buttonStateError', buttonState);
         return buttonState;
     }
+    logTraceStep(traceId, 'getDropdownOptions.buttonState', summarizeLogValue(buttonState));
 
     if (buttonState.buttonPoint && !buttonState.menuAlreadyOpen) {
         await clickAtPoint(cdp, buttonState.buttonPoint.x, buttonState.buttonPoint.y);
@@ -2991,7 +3477,7 @@ async function getDropdownOptions(cdp, kind) {
 
     if (normalizedKind === 'model' && result && !result.error) {
         const fallbackAutoDescription = 'Balanced quality and speed, recommended for most tasks';
-        const fallbackModelItems = [
+        const knownModelItems = [
             { value: 'Composer 1.5', icon: 'cloud' },
             { value: 'GPT-5.4', icon: 'cloud' },
             { value: 'GPT-5.3 Codex', icon: 'cloud' },
@@ -3000,13 +3486,8 @@ async function getDropdownOptions(cdp, kind) {
             { value: 'Gemini 3 Flash', icon: 'cloud' },
             { value: 'gpt-4', icon: '' }
         ];
-        const fallbackToggleDefs = [
-            { key: 'auto', label: 'Auto', description: fallbackAutoDescription, enabled: false },
-            { key: 'max-mode', label: 'MAX Mode', description: '', enabled: false },
-            { key: 'multi-model', label: 'Use Multiple Models', description: '', enabled: false }
-        ];
-        const iconByValue = new Map(fallbackModelItems.map((item) => [item.value.toLowerCase(), item.icon]));
-        const mergeModelItems = (...lists) => {
+        const iconByValue = new Map(knownModelItems.map((item) => [item.value.toLowerCase(), item.icon]));
+        const mergeLiveModelItems = (...lists) => {
             const seen = new Set();
             const merged = [];
 
@@ -3032,63 +3513,45 @@ async function getDropdownOptions(cdp, kind) {
 
             return merged;
         };
-        const hasStructuredMenu =
-            !!result.searchPlaceholder ||
-            !!result.footerLabel ||
-            (Array.isArray(result.toggles) && result.toggles.length >= 2) ||
-            (Array.isArray(result.options) && result.options.length >= 3);
-        const fallbackCurrent = result.current && result.current !== 'Unknown' ? result.current : 'Auto';
-        const needsCatalogAugment =
-            !hasStructuredMenu ||
-            !result.footerLabel ||
-            !Array.isArray(result.options) ||
-            result.options.length < fallbackModelItems.length;
-
-        result.current = fallbackCurrent;
-        result.searchPlaceholder = result.searchPlaceholder || 'Search models';
-        result.toggles = fallbackToggleDefs.map((fallbackToggle) => {
-            const incoming = Array.isArray(result.toggles)
-                ? result.toggles.find((toggle) =>
-                    toggle?.key === fallbackToggle.key ||
-                    String(toggle?.label || '').trim().toLowerCase() === fallbackToggle.label.toLowerCase()
-                )
-                : null;
-
-            return {
-                key: incoming?.key || fallbackToggle.key,
-                label: incoming?.label || fallbackToggle.label,
-                description: String(incoming?.description || fallbackToggle.description || '')
-                    .replace(new RegExp('^(?:' + escapeRegExp(incoming?.label || fallbackToggle.label) + '\\s*)+', 'i'), '')
-                    .trim(),
-                enabled: typeof incoming?.enabled === 'boolean'
-                    ? incoming.enabled
-                    : (fallbackToggle.key === 'auto' ? /^auto$/i.test(fallbackCurrent) : fallbackToggle.enabled)
-            };
-        });
-
+        const normalizedCurrent = String(result.current || '').trim();
+        const fallbackCurrent = normalizedCurrent && normalizedCurrent !== 'Unknown' ? normalizedCurrent : 'Auto';
+        const liveToggles = Array.isArray(result.toggles)
+            ? result.toggles
+                .map((toggle) => ({
+                    key: String(toggle?.key || toggle?.label || '')
+                        .trim()
+                        .toLowerCase()
+                        .replace(/\s+/g, '-'),
+                    label: String(toggle?.label || toggle?.key || '').trim(),
+                    description: String(toggle?.description || '').trim(),
+                    enabled: !!toggle?.enabled
+                }))
+                .filter((toggle) => toggle.key && toggle.label)
+            : [];
+        const autoToggle = liveToggles.find((toggle) => toggle.key === 'auto') || null;
         const currentItem = fallbackCurrent && !/^auto$/i.test(fallbackCurrent)
             ? [{ value: fallbackCurrent, icon: iconByValue.get(fallbackCurrent.toLowerCase()) || '' }]
             : [];
-        const mergedItems = mergeModelItems(
+        const mergedItems = mergeLiveModelItems(
             currentItem,
             Array.isArray(result.items) ? result.items : [],
-            Array.isArray(result.options) ? result.options : [],
-            needsCatalogAugment ? fallbackModelItems : []
+            Array.isArray(result.options) ? result.options : []
         );
 
+        result.current = fallbackCurrent;
+        result.searchPlaceholder = String(result.searchPlaceholder || '').trim();
+        result.toggles = liveToggles;
         result.items = mergedItems;
         result.options = mergedItems.map((item) => item.value);
-        result.autoAvailable = true;
-        result.autoEnabled = result.toggles.find((toggle) => toggle.key === 'auto')?.enabled || /^auto$/i.test(fallbackCurrent);
-        result.autoLabel = result.autoLabel || 'Auto';
-        result.autoDescription = String(result.autoDescription || fallbackAutoDescription || '')
+        result.autoAvailable = !!autoToggle || /^auto$/i.test(fallbackCurrent);
+        result.autoEnabled = autoToggle ? autoToggle.enabled : /^auto$/i.test(fallbackCurrent);
+        result.autoLabel = autoToggle?.label || result.autoLabel || 'Auto';
+        result.autoDescription = String(autoToggle?.description || result.autoDescription || fallbackAutoDescription || '')
             .replace(/^(?:auto\s*)+/i, '')
             .trim() || fallbackAutoDescription;
-        result.footerLabel = result.footerLabel || (mergedItems.length ? 'Add Models' : '');
-
-        if (!hasStructuredMenu) {
-            result.targets = Array.isArray(result.targets) ? result.targets : [];
-        }
+        result.footerLabel = String(result.footerLabel || '').trim();
+        result.live = true;
+        result.compactAuto = /^auto$/i.test(fallbackCurrent) && result.autoAvailable && !result.options.length;
     }
 
     if (normalizedKind === 'mode' && result && !result.error) {
@@ -3122,12 +3585,14 @@ async function getDropdownOptions(cdp, kind) {
                 : fallbackModeOptions);
     }
 
+    logTraceStep(traceId, 'getDropdownOptions.complete', summarizeDropdownStateForLog(result));
     return result;
 }
 
 // Start New Chat - Click the + button at the TOP of the chat window (NOT the context/media + button)
-async function startNewChat(cdp) {
-    return await evaluateCursor(cdp, `
+async function startNewChat(cdp, traceId = null) {
+    logTraceStep(traceId, 'startNewChat.request');
+    const result = await evaluateCursor(cdp, `
         const newChatButton = __cr.findNewChatButton();
         if (!newChatButton) return { error: 'New chat button not found' };
 
@@ -3144,9 +3609,12 @@ async function startNewChat(cdp) {
     `, {
         accept: (value) => value && typeof value === 'object'
     });
+    logTraceStep(traceId, 'startNewChat.complete', summarizeActionResultForLog(result));
+    return result;
 }
 // Get Chat History - Click history button and scrape conversations
-async function getChatHistory(cdp) {
+async function getChatHistory(cdp, traceId = null) {
+    logTraceStep(traceId, 'getChatHistory.request');
     const opener = await evaluateCursor(cdp, `
         const historyButton = __cr.findHistoryButton();
         if (!historyButton) return { error: 'History button not found', chats: [] };
@@ -3163,8 +3631,10 @@ async function getChatHistory(cdp) {
     });
 
     if (!opener?.success || !opener.button) {
+        logTraceStep(traceId, 'getChatHistory.openFailed', summarizeActionResultForLog(opener));
         return opener || { error: 'History button not found', chats: [] };
     }
+    logTraceStep(traceId, 'getChatHistory.openMenu', summarizeLogValue(opener));
 
     await clickAtPoint(cdp, opener.button.x, opener.button.y);
     await new Promise(resolve => setTimeout(resolve, 500));
@@ -3196,7 +3666,10 @@ async function getChatHistory(cdp) {
         const a = String(left || '').replace(/[\u2026.]+$/g, '').trim().toLowerCase();
         const b = String(right || '').replace(/[\u2026.]+$/g, '').trim().toLowerCase();
         if (!a || !b) return false;
-        return a === b || a.includes(b) || b.includes(a);
+        if (a === b) return true;
+        if (/(?:\u2026|\.{3})\s*$/u.test(String(left || '').trim()) && b.startsWith(a) && b.length > a.length) return true;
+        if (/(?:\u2026|\.{3})\s*$/u.test(String(right || '').trim()) && a.startsWith(b) && a.length > b.length) return true;
+        return false;
     };
 
     if (result?.success && Array.isArray(result.chats) && result.activeTitle) {
@@ -3207,23 +3680,41 @@ async function getChatHistory(cdp) {
         }
     }
 
+    logTraceStep(traceId, 'getChatHistory.complete', summarizeActionResultForLog(result));
     return result;
 }
 
-async function selectChat(cdp, chatTitle) {
+async function selectChat(cdp, chatTitle, traceId = null) {
     const targetTitle = String(chatTitle || '').trim();
     if (!targetTitle) return { error: 'Chat title required' };
+    logTraceStep(traceId, 'selectChat.request', {
+        targetTitle
+    });
 
     const titlesMatch = (left, right) => {
         const a = String(left || '').replace(/[\u2026.]+$/g, '').trim().toLowerCase();
         const b = String(right || '').replace(/[\u2026.]+$/g, '').trim().toLowerCase();
         if (!a || !b) return false;
-        return a === b || a.includes(b) || b.includes(a);
+        if (a === b) return true;
+        if (/(?:\u2026|\.{3})\s*$/u.test(String(left || '').trim()) && b.startsWith(a) && b.length > a.length) return true;
+        if (/(?:\u2026|\.{3})\s*$/u.test(String(right || '').trim()) && a.startsWith(b) && a.length > b.length) return true;
+        return false;
     };
 
     const tabSelection = await evaluateCursor(cdp, `
         const desiredTitle = ${JSON.stringify(targetTitle)};
-        const desiredLower = desiredTitle.toLowerCase();
+        const normalizeTitle = (value) => String(value || '').replace(/[\u2026.]+$/g, '').trim().toLowerCase();
+        const hasExplicitTruncation = (value) => /(?:\u2026|\.{3})\s*$/u.test(String(value || '').trim());
+        const titlesMatch = (left, right) => {
+            const a = normalizeTitle(left);
+            const b = normalizeTitle(right);
+            if (!a || !b) return false;
+            if (a === b) return true;
+            if (hasExplicitTruncation(left) && b.startsWith(a) && b.length > a.length) return true;
+            if (hasExplicitTruncation(right) && a.startsWith(b) && a.length > b.length) return true;
+            return false;
+        };
+        const desiredLower = normalizeTitle(desiredTitle);
         const container = __cr.findChatTabsContainer();
         if (!container) return { success: false, reason: 'chat_tabs_not_found' };
 
@@ -3237,14 +3728,11 @@ async function selectChat(cdp, chatTitle) {
 
         const target = tabs
             .filter((tab) => {
-                const titleLower = tab.title.toLowerCase();
-                return titleLower === desiredLower ||
-                    titleLower.includes(desiredLower) ||
-                    desiredLower.includes(titleLower);
+                return titlesMatch(tab.title, desiredTitle);
             })
             .sort((a, b) => {
-                const aExact = a.title.toLowerCase() === desiredLower ? 1 : 0;
-                const bExact = b.title.toLowerCase() === desiredLower ? 1 : 0;
+                const aExact = normalizeTitle(a.title) === desiredLower ? 1 : 0;
+                const bExact = normalizeTitle(b.title) === desiredLower ? 1 : 0;
                 if (bExact !== aExact) return bExact - aExact;
                 return b.title.length - a.title.length;
             })[0];
@@ -3276,6 +3764,7 @@ async function selectChat(cdp, chatTitle) {
     });
 
     if (tabSelection?.success) {
+        logTraceStep(traceId, 'selectChat.tabSelection', summarizeActionResultForLog(tabSelection));
         if (!tabSelection.alreadyActive) {
             await new Promise(resolve => setTimeout(resolve, 300));
         }
@@ -3299,11 +3788,13 @@ async function selectChat(cdp, chatTitle) {
         }
 
         if (tabSelection.alreadyActive || titlesMatch(activeCheck?.activeChatTitle, tabSelection.title)) {
-            return {
+            const finalResult = {
                 success: true,
                 method: tabSelection.method,
                 title: activeCheck?.activeChatTitle || tabSelection.title
             };
+            logTraceStep(traceId, 'selectChat.complete', summarizeActionResultForLog(finalResult));
+            return finalResult;
         }
     }
 
@@ -3331,6 +3822,7 @@ async function selectChat(cdp, chatTitle) {
     });
 
     if (!opener?.success) {
+        logTraceStep(traceId, 'selectChat.historyOpenFailed', summarizeActionResultForLog(opener));
         return opener || { error: 'History button not found' };
     }
 
@@ -3383,17 +3875,21 @@ async function selectChat(cdp, chatTitle) {
     });
 
     if (!selection?.success || !selection.target) {
+        logTraceStep(traceId, 'selectChat.historySelectionFailed', summarizeActionResultForLog(selection));
         return selection || { error: 'Chat not found: ' + targetTitle };
     }
+    logTraceStep(traceId, 'selectChat.historySelection', summarizeActionResultForLog(selection));
 
     await clickAtPoint(cdp, selection.target.x, selection.target.y);
     await new Promise(resolve => setTimeout(resolve, 300));
 
-    return {
+    const finalResult = {
         success: true,
         method: selection.method,
         title: selection.title
     };
+    logTraceStep(traceId, 'selectChat.complete', summarizeActionResultForLog(finalResult));
+    return finalResult;
 }
 
 // Close History Panel (Escape)
@@ -3499,10 +3995,12 @@ async function getAppState(cdp) {
 
     if ((result?.mode === 'Unknown' || result?.model === 'Unknown') && cdp) {
         try {
+            const fallbackUsage = { mode: false, model: false };
             if (result.mode === 'Unknown') {
                 const modeState = await getDropdownOptions(cdp, 'mode');
                 if (modeState?.current && modeState.current !== 'Unknown') {
                     result.mode = modeState.current;
+                    fallbackUsage.mode = true;
                 }
             }
 
@@ -3510,10 +4008,22 @@ async function getAppState(cdp) {
                 const modelState = await getDropdownOptions(cdp, 'model');
                 if (modelState?.current && modelState.current !== 'Unknown') {
                     result.model = modelState.current;
+                    fallbackUsage.model = true;
                 }
+            }
+
+            if (fallbackUsage.mode || fallbackUsage.model) {
+                console.log('[APP_STATE] Resolved unknown values via dropdown fallback', {
+                    fallbackUsage,
+                    state: summarizeAppStateForLog(result)
+                });
             }
         } catch (error) {
             // Keep best-effort state; fallbacks above already applied where possible.
+            console.warn('[APP_STATE] Dropdown fallback failed', {
+                message: error?.message || String(error),
+                state: summarizeAppStateForLog(result)
+            });
         }
     }
 
@@ -3626,10 +4136,17 @@ async function startPolling(wss) {
         try {
             const appState = await getAppState(cdpConnection);
             if (appState && typeof appState === 'object') {
+                const previousAppState = lastAppState;
+                rememberAppStateSample(appState);
                 const appStateHash = hashString(JSON.stringify(appState));
                 if (appStateHash !== lastAppStateHash) {
-                    lastAppState = appState;
+                    const changedKeys = summarizeChangedKeys(previousAppState || {}, appState);
                     lastAppStateHash = appStateHash;
+                    console.log('[POLL] App state changed', {
+                        hash: appStateHash,
+                        changedKeys,
+                        state: summarizeAppStateForLog(appState)
+                    });
                     broadcast({
                         type: 'app_state_update',
                         hash: appStateHash,
@@ -3645,10 +4162,14 @@ async function startPolling(wss) {
                     activeChatTitle: snapshot.activeChatTitle || '',
                     chatTabs: snapshot.chatTabs || []
                 }));
+                lastSnapshot = {
+                    ...snapshot,
+                    hash,
+                    capturedAt: new Date().toISOString()
+                };
 
                 // Only update if content changed
                 if (hash !== lastSnapshotHash) {
-                    lastSnapshot = snapshot;
                     lastSnapshotHash = hash;
 
                     // Broadcast lightweight notification via WebSocket (hash only)
@@ -3657,6 +4178,7 @@ async function startPolling(wss) {
                         type: 'snapshot_update',
                         hash: hash
                     });
+                    console.log('[POLL] Snapshot updated', summarizeSnapshotForLog(lastSnapshot));
 
                     console.log(`Ã°Å¸â€œÂ¸ Snapshot updated(hash: ${hash})`);
                 }
@@ -3665,6 +4187,10 @@ async function startPolling(wss) {
                 const now = Date.now();
                 if (!lastErrorLog || now - lastErrorLog > 10000) {
                     const errorMsg = snapshot?.error || 'No valid snapshot captured (check contexts)';
+                    console.warn('[POLL] Snapshot capture issue', {
+                        error: summarizeLogText(errorMsg, 160),
+                        contextCount: Array.isArray(cdpConnection?.contexts) ? cdpConnection.contexts.length : 0
+                    });
                     console.warn(`Ã¢Å¡Â Ã¯Â¸Â  Snapshot capture issue: ${errorMsg} `);
                     if (errorMsg.includes('container not found')) {
                         console.log('   (Tip: Ensure an active chat is open in cursor)');
@@ -3757,6 +4283,7 @@ async function main() {
             closeHistory,
             ensureHttpsCertificates,
             getAppState,
+            getAppStateForApi,
             getCdpConnection: () => cdpConnection,
             getChatHistory,
             getDropdownOptions,
