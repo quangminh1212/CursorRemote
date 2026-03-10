@@ -79,7 +79,7 @@ export async function initCDP(state, { ports } = {}) {
 export async function startPolling(state, wss, { POLL_INTERVAL = 500, ports } = {}) {
     let lastErrorLog = 0;
     let isConnecting = false;
-    const activePollIntervalMs = Math.max(160, Math.floor(POLL_INTERVAL / 2));
+    const activePollIntervalMs = Math.max(120, Math.floor(POLL_INTERVAL / 3));
 
     const broadcast = (payload) => {
         const message = JSON.stringify(payload);
