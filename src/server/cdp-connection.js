@@ -1,13 +1,11 @@
 import WebSocket from 'ws';
-import { getJson, sleep } from './system-utils.js';
-import { getOrderedContexts } from './cdp-eval.js';
+import { getJson } from './system-utils.js';
 
 // Find Cursor CDP endpoint (with identity verification to avoid connecting to Antigravity or other Electron apps)
 async function discoverCDP(ports = [9000, 9001, 9002, 9003]) {
     const errors = [];
     for (const port of ports) {
         try {
-            // Step 1: Verify this CDP port belongs to Cursor via /json/version
             let isCursorApp = false;
             try {
                 const versionInfo = await getJson(`http://127.0.0.1:${port}/json/version`);
@@ -16,47 +14,43 @@ async function discoverCDP(ports = [9000, 9001, 9002, 9003]) {
                 if (browser.includes('cursor') || userAgent.includes('cursor')) {
                     isCursorApp = true;
                 } else {
-                    console.log(`âš ï¸  Port ${port} belongs to "${versionInfo.Browser || 'unknown'}" (not Cursor) â€” skipping`);
+                    console.log(`[INFO] Port ${port} belongs to "${versionInfo.Browser || 'unknown'}" (not Cursor); skipping`);
                     continue;
                 }
-            } catch (verErr) {
-                // /json/version failed but /json/list might still work â€” proceed with URL-based check
+            } catch {
+                // /json/version failed but /json/list might still work; proceed with URL-based check.
             }
 
-            // Step 2: Discover targets from this verified Cursor port
             const list = await getJson(`http://127.0.0.1:${port}/json/list`);
 
-            // Extra safety: if /json/version was unavailable, filter out non-Cursor targets by URL
-            const isCursorTarget = (t) => {
-                if (isCursorApp) return true; // Already verified at port level
-                const url = (t.url || '').toLowerCase();
-                const title = (t.title || '').toLowerCase();
-                // Reject targets that clearly belong to Antigravity
+            const isCursorTarget = (target) => {
+                if (isCursorApp) return true;
+                const url = (target.url || '').toLowerCase();
+                const title = (target.title || '').toLowerCase();
                 if (url.includes('antigravity') || title.includes('antigravity')) return false;
                 return true;
             };
 
-            // Priority 1: Standard Workbench (The main window)
-            const workbench = list.find(t => isCursorTarget(t) && (t.url?.includes('workbench.html') || (t.title && t.title.includes('workbench'))));
-            if (workbench && workbench.webSocketDebuggerUrl) {
-                console.log('âœ… Found Cursor Workbench target:', workbench.title, `(port ${port})`);
+            const workbench = list.find((target) => isCursorTarget(target) && (target.url?.includes('workbench.html') || (target.title && target.title.includes('workbench'))));
+            if (workbench?.webSocketDebuggerUrl) {
+                console.log('[INFO] Found Cursor Workbench target:', workbench.title, `(port ${port})`);
                 return { port, url: workbench.webSocketDebuggerUrl };
             }
 
-            // Priority 2: Jetski/Launchpad (Fallback)
-            const jetski = list.find(t => isCursorTarget(t) && (t.url?.includes('jetski') || t.title === 'Launchpad'));
-            if (jetski && jetski.webSocketDebuggerUrl) {
-                console.log('âœ… Found Cursor Jetski/Launchpad target:', jetski.title, `(port ${port})`);
+            const jetski = list.find((target) => isCursorTarget(target) && (target.url?.includes('jetski') || target.title === 'Launchpad'));
+            if (jetski?.webSocketDebuggerUrl) {
+                console.log('[INFO] Found Cursor Jetski/Launchpad target:', jetski.title, `(port ${port})`);
                 return { port, url: jetski.webSocketDebuggerUrl };
             }
 
             if (isCursorApp) {
                 errors.push(`${port}: Cursor running but no workbench target found`);
             }
-        } catch (e) {
-            errors.push(`${port}: ${e.message}`);
+        } catch (error) {
+            errors.push(`${port}: ${error.message}`);
         }
     }
+
     const errorSummary = errors.length ? `Errors: ${errors.join(', ')}` : 'No ports responding';
     throw new Error(`Cursor CDP not found. ${errorSummary}`);
 }
@@ -70,16 +64,14 @@ async function connectCDP(url) {
     });
 
     let idCounter = 1;
-    const pendingCalls = new Map(); // Track pending calls by ID
+    const pendingCalls = new Map();
     const contexts = [];
-    const CDP_CALL_TIMEOUT = 30000; // 30 seconds timeout
+    const cdpCallTimeoutMs = 30000;
 
-    // Single centralized message handler (fixes MaxListenersExceeded warning)
     ws.on('message', (msg) => {
         try {
-            const data = JSON.parse(msg);
+            const data = JSON.parse(String(msg));
 
-            // Handle CDP method responses
             if (data.id !== undefined && pendingCalls.has(data.id)) {
                 const { resolve, reject, timeoutId } = pendingCalls.get(data.id);
                 clearTimeout(timeoutId);
@@ -89,24 +81,23 @@ async function connectCDP(url) {
                 else resolve(data.result);
             }
 
-            // Handle execution context events
             if (data.method === 'Runtime.executionContextCreated') {
                 contexts.push(data.params.context);
             } else if (data.method === 'Runtime.executionContextDestroyed') {
                 const id = data.params.executionContextId;
-                const idx = contexts.findIndex(c => c.id === id);
-                if (idx !== -1) contexts.splice(idx, 1);
+                const index = contexts.findIndex((context) => context.id === id);
+                if (index !== -1) contexts.splice(index, 1);
             } else if (data.method === 'Runtime.executionContextsCleared') {
                 contexts.length = 0;
             }
-        } catch (e) { }
+        } catch {
+            // Ignore malformed websocket frames and unrelated traffic.
+        }
     });
 
-    // Handle CDP WebSocket disconnect - triggers auto-reconnect in polling loop
     ws.on('close', () => {
-        console.warn('Ã°Å¸â€Å’ CDP WebSocket closed - will auto-reconnect');
-        // Reject all pending calls
-        for (const [id, { reject, timeoutId }] of pendingCalls) {
+        console.warn('[WARN] CDP WebSocket closed; will auto-reconnect');
+        for (const [, { reject, timeoutId }] of pendingCalls) {
             clearTimeout(timeoutId);
             reject(new Error('CDP connection closed'));
         }
@@ -114,39 +105,36 @@ async function connectCDP(url) {
     });
 
     ws.on('error', (err) => {
-        console.error('Ã°Å¸â€Å’ CDP WebSocket error:', err.message);
-        // Don't null cdpConnection here - 'close' event will handle it
+        console.error('[ERROR] CDP WebSocket error:', err.message);
     });
 
     const call = (method, params) => new Promise((resolve, reject) => {
-        // Check if WebSocket is still open before sending
         if (!ws || ws.readyState !== WebSocket.OPEN) {
-            return reject(new Error('CDP WebSocket not open'));
+            reject(new Error('CDP WebSocket not open'));
+            return;
         }
 
         const id = idCounter++;
-
-        // Setup timeout to prevent memory leaks from never-resolved calls
         const timeoutId = setTimeout(() => {
             if (pendingCalls.has(id)) {
                 pendingCalls.delete(id);
-                reject(new Error(`CDP call ${method} timed out after ${CDP_CALL_TIMEOUT}ms`));
+                reject(new Error(`CDP call ${method} timed out after ${cdpCallTimeoutMs}ms`));
             }
-        }, CDP_CALL_TIMEOUT);
+        }, cdpCallTimeoutMs);
 
         pendingCalls.set(id, { resolve, reject, timeoutId });
 
         try {
             ws.send(JSON.stringify({ id, method, params }));
-        } catch (e) {
+        } catch (error) {
             clearTimeout(timeoutId);
             pendingCalls.delete(id);
-            reject(new Error(`CDP send failed: ${e.message}`));
+            reject(new Error(`CDP send failed: ${error.message}`));
         }
     });
 
-    await call("Runtime.enable", {});
-    await new Promise(r => setTimeout(r, 1000));
+    await call('Runtime.enable', {});
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 1000));
 
     return { ws, call, contexts };
 }

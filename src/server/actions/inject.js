@@ -1,6 +1,7 @@
 import fs from 'fs';
-import { evaluateCursor, clickAtPoint } from '../cdp-eval.js';
-import { createTraceId, logTraceStep, summarizeLogText, summarizeLogValue, summarizeActionResultForLog } from '../logger.js';
+import { isAbsolute, resolve } from 'path';
+import { evaluateCursor } from '../cdp-eval.js';
+import { logTraceStep, summarizeLogText, summarizeLogValue, summarizeActionResultForLog } from '../logger.js';
 
 // Inject message into Cursor
 async function injectMessage(cdp, text, traceId = null) {
@@ -67,7 +68,7 @@ async function injectMessage(cdp, text, traceId = null) {
         console.warn('CDP Enter dispatch failed, falling back to DOM click only:', error.message);
     }
 
-    await new Promise(resolve => setTimeout(resolve, 200));
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 200));
 
     let finalState = await evaluateCursor(cdp, `
         const editor = __cr.findEditor();
@@ -111,7 +112,7 @@ async function injectMessage(cdp, text, traceId = null) {
                 clickCount: 1
             });
             method = 'cdp_enter_then_mouse_send';
-            await new Promise(resolve => setTimeout(resolve, 250));
+            await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
             finalState = await evaluateCursor(cdp, `
                 const editor = __cr.findEditor();
                 return {
@@ -140,75 +141,97 @@ async function injectMessage(cdp, text, traceId = null) {
 
 // Inject file into Cursor via CDP file chooser
 async function injectFile(cdp, filePath) {
-    // Normalize to absolute Windows path for CDP
-    const absolutePath = filePath.startsWith('/') ? filePath : join(__dirname, filePath).replace(/\\/g, '/');
-    const winPath = absolutePath.replace(/\//g, '\\');
+    const nativePath = isAbsolute(filePath) ? filePath : resolve(filePath);
+    if (!fs.existsSync(nativePath)) {
+        return { success: false, error: `File not found: ${nativePath}` };
+    }
 
-    console.log(`Ã°Å¸â€œâ€š Injecting file via CDP: ${winPath}`);
+    console.log(`[UPLOAD] Injecting file via CDP: ${nativePath}`);
 
     try {
-        // Step 1: Enable file chooser interception
-        await cdp.call("Page.setInterceptFileChooserDialog", { enabled: true });
+        await cdp.call('Page.setInterceptFileChooserDialog', { enabled: true });
 
-        // Step 2: Set up a promise to wait for the file chooser event
-        const fileChooserPromise = new Promise((resolve, reject) => {
-            const timeout = setTimeout(() => {
+        const fileChooserPromise = new Promise((resolveChooser, rejectChooser) => {
+            let handled = false;
+
+            const cleanup = () => {
                 cdp.ws.removeListener('message', handler);
-                reject(new Error('File chooser did not open within 5s'));
+                clearTimeout(timeoutId);
+            };
+
+            const timeoutId = setTimeout(() => {
+                if (handled) return;
+                handled = true;
+                cleanup();
+                rejectChooser(new Error('File chooser did not open within 5s'));
             }, 5000);
 
             const handler = (rawMsg) => {
                 try {
-                    const msg = JSON.parse(rawMsg);
-                    if (msg.method === 'Page.fileChooserOpened') {
-                        clearTimeout(timeout);
-                        cdp.ws.removeListener('message', handler);
-                        resolve(msg.params);
+                    const msg = JSON.parse(String(rawMsg));
+                    if (msg.method !== 'Page.fileChooserOpened' || handled) {
+                        return;
                     }
-                } catch (e) { /* ignore parse errors */ }
+
+                    handled = true;
+                    cleanup();
+                    resolveChooser(msg.params || {});
+                } catch {
+                    // Ignore non-JSON websocket traffic.
+                }
             };
+
             cdp.ws.on('message', handler);
         });
 
-        // Step 3: Click the context/media "+" button in IDE (bottom-left, near editor)
         const clickResult = await clickContextPlusButton(cdp);
-        console.log(`Ã°Å¸â€“Â±Ã¯Â¸Â Click context+ result:`, clickResult);
+        console.log('[UPLOAD] Click context+ result:', clickResult);
 
         if (!clickResult.success) {
-            // Disable interception before returning
-            try { await cdp.call("Page.setInterceptFileChooserDialog", { enabled: false }); } catch (e) { }
+            try {
+                await cdp.call('Page.setInterceptFileChooserDialog', { enabled: false });
+            } catch {
+                // Best effort cleanup only.
+            }
             return { success: false, error: 'Could not find context+ button in IDE', details: clickResult };
         }
 
-        // Step 4: Wait for file chooser to open, then accept with our file
         try {
             const chooserParams = await fileChooserPromise;
-            console.log(`Ã°Å¸â€œÂ File chooser opened, mode: ${chooserParams.mode}`);
+            console.log(`[UPLOAD] File chooser opened, mode: ${chooserParams.mode || 'unknown'}`);
 
-            await cdp.call("Page.handleFileChooser", {
-                action: "accept",
-                files: [winPath]
+            await cdp.call('Page.handleFileChooser', {
+                action: 'accept',
+                files: [nativePath]
             });
 
-            console.log(`Ã¢Å“â€¦ File injected successfully: ${winPath}`);
+            console.log(`[UPLOAD] File injected successfully: ${nativePath}`);
 
-            // Disable interception
-            try { await cdp.call("Page.setInterceptFileChooserDialog", { enabled: false }); } catch (e) { }
+            try {
+                await cdp.call('Page.setInterceptFileChooserDialog', { enabled: false });
+            } catch {
+                // Best effort cleanup only.
+            }
 
-            return { success: true, method: 'file_chooser', path: winPath };
-        } catch (e) {
-            // File chooser didn't open - perhaps the button doesn't open file dialog
-            // Try fallback: drag-and-drop via CDP Input events
-            console.warn(`Ã¢Å¡Â Ã¯Â¸Â File chooser approach failed: ${e.message}. Trying fallback...`);
-            try { await cdp.call("Page.setInterceptFileChooserDialog", { enabled: false }); } catch (e2) { }
+            return { success: true, method: 'file_chooser', path: nativePath };
+        } catch (error) {
+            console.warn(`[UPLOAD] File chooser approach failed: ${error.message}. Trying fallback...`);
+            try {
+                await cdp.call('Page.setInterceptFileChooserDialog', { enabled: false });
+            } catch {
+                // Best effort cleanup only.
+            }
 
-            // Fallback: Use DOM.setFileInputFiles if there's a file input
-            return await injectFileViaInput(cdp, winPath);
+            return await injectFileViaInput(cdp, nativePath);
         }
-    } catch (e) {
-        try { await cdp.call("Page.setInterceptFileChooserDialog", { enabled: false }); } catch (e2) { }
-        console.error(`Ã¢ÂÅ’ File injection error: ${e.message}`);
-        return { success: false, error: e.message };
+    } catch (error) {
+        try {
+            await cdp.call('Page.setInterceptFileChooserDialog', { enabled: false });
+        } catch {
+            // Best effort cleanup only.
+        }
+        console.error(`[UPLOAD] File injection error: ${error.message}`);
+        return { success: false, error: error.message };
     }
 }
 
@@ -247,31 +270,29 @@ async function injectFileViaInput(cdp, filePath) {
 
     for (const ctx of cdp.contexts) {
         try {
-            const res = await cdp.call("Runtime.evaluate", {
+            const res = await cdp.call('Runtime.evaluate', {
                 expression: EXP,
                 returnByValue: true,
                 contextId: ctx.id
             });
 
             if (res.result?.value?.found) {
-                // Use DOM.setFileInputFiles to set files on the input
-                // First get the document
-                const doc = await cdp.call("DOM.getDocument", { depth: 0 });
-                const nodeResult = await cdp.call("DOM.querySelector", {
+                const doc = await cdp.call('DOM.getDocument', { depth: 0 });
+                const nodeResult = await cdp.call('DOM.querySelector', {
                     nodeId: doc.root.nodeId,
                     selector: 'input[type="file"]'
                 });
 
                 if (nodeResult.nodeId) {
-                    await cdp.call("DOM.setFileInputFiles", {
+                    await cdp.call('DOM.setFileInputFiles', {
                         files: [filePath],
                         nodeId: nodeResult.nodeId
                     });
-                    return { success: true, method: 'dom_set_file_input' };
+                    return { success: true, method: 'dom_set_file_input', path: filePath };
                 }
             }
-        } catch (e) {
-            console.warn(`DOM file input fallback failed in context ${ctx.id}:`, e.message);
+        } catch (error) {
+            console.warn(`DOM file input fallback failed in context ${ctx.id}:`, error.message);
         }
     }
     return { success: false, error: 'No file input found in IDE' };

@@ -3,6 +3,7 @@ import os from 'os';
 import http from 'http';
 import { join } from 'path';
 import { execSync } from 'child_process';
+import { fileURLToPath } from 'url';
 
 // Kill any existing process on the server port (prevents EADDRINUSE)
 async function killPortProcess(port) {
@@ -20,7 +21,7 @@ async function killPortProcess(port) {
             for (const pid of pids) {
                 try {
                     execSync(`taskkill /PID ${pid} /F`, { stdio: 'pipe' });
-                    console.log(`Ã¢Å¡Â Ã¯Â¸Â  Killed existing process on port ${port} (PID: ${pid})`);
+                    console.log(`[INFO] Killed existing process on port ${port} (PID: ${pid})`);
                 } catch (e) { /* Process may have already exited */ }
             }
         } else {
@@ -29,7 +30,7 @@ async function killPortProcess(port) {
             for (const pid of pids) {
                 try {
                     execSync(`kill -9 ${pid}`, { stdio: 'pipe' });
-                    console.log(`Ã¢Å¡Â Ã¯Â¸Â  Killed existing process on port ${port} (PID: ${pid})`);
+                    console.log(`[INFO] Killed existing process on port ${port} (PID: ${pid})`);
                 } catch (e) { /* Process may have already exited */ }
             }
         }
@@ -51,12 +52,12 @@ async function killPortProcess(port) {
             testServer.listen(port, '0.0.0.0');
         });
         if (isFree) {
-            console.log(`Ã¢Å“â€¦ Port ${port} is free`);
+            console.log(`[INFO] Port ${port} is free`);
             return;
         }
         await new Promise(r => setTimeout(r, checkInterval));
     }
-    console.warn(`Ã¢Å¡Â Ã¯Â¸Â  Port ${port} may still be in use after ${maxWait}ms wait`);
+    console.warn(`[WARN] Port ${port} may still be in use after ${maxWait}ms wait`);
 }
 
 // Get local IP address for mobile access
@@ -139,7 +140,9 @@ function findRecentcursorWorkspace() {
 
         for (const folderUri of folderUris) {
             try {
-                const workspacePath = fileURLToPath(folderUri);
+                const workspacePath = String(folderUri).startsWith('file:')
+                    ? fileURLToPath(folderUri)
+                    : String(folderUri);
                 if (workspacePath && fs.existsSync(workspacePath)) {
                     return workspacePath;
                 }
@@ -207,3 +210,4 @@ export {
     findcursorExecutable,
     findcursorCliCommand
 };
+
