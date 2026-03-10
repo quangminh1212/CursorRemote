@@ -1,5 +1,6 @@
 import compression from 'compression';
 import cookieParser from 'cookie-parser';
+import crypto from 'crypto';
 import express from 'express';
 import fs from 'fs';
 import http from 'http';
@@ -69,9 +70,9 @@ export async function createServer({
     }
 
     const wss = new WebSocketServer({ server });
-    const authSalt = process.env.AUTH_SALT || 'cursor_default_salt_99';
+    const authSalt = process.env.AUTH_SALT || crypto.randomBytes(32).toString('hex');
     const authToken = hashString(APP_PASSWORD + authSalt);
-    const sessionSecret = process.env.SESSION_SECRET || 'cursor_secret_key_1337';
+    const sessionSecret = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 
     app.use(compression());
     app.use(express.json());

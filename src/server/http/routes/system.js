@@ -1,6 +1,10 @@
 import QRCode from 'qrcode';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import { inspectUI } from '../../../../ui_inspector.js';
 import { setSignedAuthCookie } from '../auth.js';
+
+const execAsync = promisify(exec);
 
 const UI_INSPECT_EXPR = `(() => {
     try {
@@ -147,7 +151,37 @@ export function registerSystemRoutes(app, {
     getSnapshot,
     hasSSL
 }) {
+    // Lightweight rate limiter for login (no npm dep needed)
+    const loginAttempts = new Map();
+    const LOGIN_WINDOW_MS = 15 * 60 * 1000; // 15 min
+    const LOGIN_MAX_ATTEMPTS = 10;
+
+    // Cleanup expired entries every 5 minutes
+    setInterval(() => {
+        const now = Date.now();
+        for (const [ip, data] of loginAttempts) {
+            if (now - data.firstAttempt > LOGIN_WINDOW_MS) loginAttempts.delete(ip);
+        }
+    }, 5 * 60 * 1000).unref();
+
     app.post('/login', (req, res) => {
+        const clientIp = req.ip || req.socket?.remoteAddress || 'unknown';
+        const now = Date.now();
+        const record = loginAttempts.get(clientIp);
+
+        if (record) {
+            if (now - record.firstAttempt > LOGIN_WINDOW_MS) {
+                loginAttempts.set(clientIp, { count: 1, firstAttempt: now });
+            } else if (record.count >= LOGIN_MAX_ATTEMPTS) {
+                const retryAfterSec = Math.ceil((LOGIN_WINDOW_MS - (now - record.firstAttempt)) / 1000);
+                return res.status(429).json({ error: 'Too many login attempts', retryAfterSec });
+            } else {
+                record.count++;
+            }
+        } else {
+            loginAttempts.set(clientIp, { count: 1, firstAttempt: now });
+        }
+
         const { password } = req.body;
         const trace = createSystemTrace(req, 'login', {
             passwordProvided: typeof password === 'string' && password.length > 0
@@ -304,6 +338,7 @@ export function registerSystemRoutes(app, {
             execSync('node generate_ssl.js', {
                 cwd: __dirname,
                 stdio: 'pipe',
+                timeout: 30000,
                 env: {
                     ...process.env,
                     CR_RUNTIME_DIR: RUNTIME_ROOT
@@ -441,7 +476,7 @@ export function registerSystemRoutes(app, {
                 bestContextData: bestContext
             });
         } catch (error) {
-            res.status(500).json({ error: error.message, stack: error.stack });
+            res.status(500).json({ error: error.message });
         }
     });
 

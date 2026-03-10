@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { evaluateCursor } from './cdp-eval.js';
 import { summarizeLogText, summarizeAppStateForLog } from './logger.js';
 import { getDropdownOptions } from './actions/mode-model.js';
@@ -98,15 +99,9 @@ async function getAppState(cdp, { lastAppState = null } = {}) {
     return result;
 }
 
-// Simple hash function
-function hashString(str) {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-        const char = str.charCodeAt(i);
-        hash = ((hash << 5) - hash) + char;
-        hash = hash & hash;
-    }
-    return hash.toString(36);
+// Secure hash function using HMAC-SHA256
+function hashString(str, salt = 'cr_default') {
+    return crypto.createHmac('sha256', salt).update(str).digest('hex');
 }
 
 function normalizeUiStateText(value) {
@@ -140,17 +135,25 @@ function isLocalRequest(req) {
     // 2. Check the remote IP address
     const ip = req.ip || req.socket.remoteAddress || '';
 
-    // Standard local/private IPv4 and IPv6 ranges
-    return ip === '127.0.0.1' ||
-        ip === '::1' ||
-        ip === '::ffff:127.0.0.1' ||
-        ip.startsWith('192.168.') ||
-        ip.startsWith('10.') ||
-        ip.startsWith('172.16.') || ip.startsWith('172.17.') ||
-        ip.startsWith('172.18.') || ip.startsWith('172.19.') ||
-        ip.startsWith('172.2') || ip.startsWith('172.3') ||
-        ip.startsWith('::ffff:192.168.') ||
-        ip.startsWith('::ffff:10.');
+    // Strip IPv6-mapped IPv4 prefix for unified checking
+    const plainIp = ip.replace(/^::ffff:/, '');
+
+    // Loopback
+    if (plainIp === '127.0.0.1' || ip === '::1') return true;
+
+    // RFC 1918 private ranges
+    const parts = plainIp.split('.');
+    if (parts.length === 4) {
+        const [a, b] = parts.map(Number);
+        // 10.0.0.0/8
+        if (a === 10) return true;
+        // 192.168.0.0/16
+        if (a === 192 && b === 168) return true;
+        // 172.16.0.0/12 (172.16.0.0 - 172.31.255.255)
+        if (a === 172 && b >= 16 && b <= 31) return true;
+    }
+
+    return false;
 }
 
 export { getAppState, hashString, normalizeUiStateText, escapeRegExp, isPlausibleUiMode, isPlausibleUiModel, isLocalRequest };
