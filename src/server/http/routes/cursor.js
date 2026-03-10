@@ -2,9 +2,13 @@ import fs from 'fs';
 import multer from 'multer';
 import { join } from 'path';
 
+function isCdpConnectionReady(cdpConnection) {
+    return !!(cdpConnection && cdpConnection.ws && cdpConnection.ws.readyState === 1);
+}
+
 function getConnectedCdp(getCdpConnection, res, errorMessage = 'CDP disconnected') {
     const cdpConnection = getCdpConnection();
-    if (!cdpConnection) {
+    if (!isCdpConnectionReady(cdpConnection)) {
         res.status(503).json({ error: errorMessage });
         return null;
     }
@@ -235,7 +239,7 @@ export function registerCursorRoutes(app, {
             return;
         }
 
-        const filePath = req.file.path.replace(/\\/g, '/');
+        const filePath = req.file.path;
         console.log(`File uploaded: ${req.file.originalname} (${req.file.size} bytes) -> ${filePath}`);
 
         try {
@@ -251,9 +255,10 @@ export function registerCursorRoutes(app, {
         } catch (error) {
             console.error('File inject error:', error);
             trace.fail(error, {
-                file: req.file.originalname
+                file: req.file.originalname,
+                httpStatus: 500
             });
-            res.json({
+            res.status(500).json({
                 success: false,
                 file: req.file.originalname,
                 error: error.message
@@ -280,7 +285,7 @@ export function registerCursorRoutes(app, {
     app.get('/app-state', async (req, res) => {
         const trace = createActionTrace(req, 'app-state');
         const cdpConnection = getCdpConnection();
-        if (!cdpConnection) {
+        if (!isCdpConnectionReady(cdpConnection)) {
             const fallbackState = { mode: 'Unknown', model: 'Unknown', isRunning: false, hasChat: false, hasMessages: false, editorFound: false, activeChatTitle: '', chatTabs: [] };
             trace.finish(fallbackState, { cdpConnected: false });
             return res.json(fallbackState);
@@ -297,7 +302,7 @@ export function registerCursorRoutes(app, {
         const kind = req.query.kind === 'model' ? 'model' : 'mode';
         const trace = createActionTrace(req, 'dropdown-options', { kind });
         const cdpConnection = getCdpConnection();
-        if (!cdpConnection) {
+        if (!isCdpConnectionReady(cdpConnection)) {
             const fallbackResult = { error: 'CDP disconnected', kind, options: [] };
             trace.finish(fallbackResult, { cdpConnected: false });
             return res.json(fallbackResult);
@@ -354,7 +359,7 @@ export function registerCursorRoutes(app, {
     app.get('/chat-history', async (req, res) => {
         const trace = createActionTrace(req, 'chat-history');
         const cdpConnection = getCdpConnection();
-        if (!cdpConnection) {
+        if (!isCdpConnectionReady(cdpConnection)) {
             const fallbackResult = { error: 'CDP disconnected', chats: [] };
             trace.finish(fallbackResult, { cdpConnected: false });
             return res.json(fallbackResult);
@@ -410,7 +415,7 @@ export function registerCursorRoutes(app, {
 
     app.get('/chat-status', async (req, res) => {
         const cdpConnection = getCdpConnection();
-        if (!cdpConnection) {
+        if (!isCdpConnectionReady(cdpConnection)) {
             return res.json({ hasChat: false, hasMessages: false, editorFound: false });
         }
 

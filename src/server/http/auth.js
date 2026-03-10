@@ -7,8 +7,23 @@ function summarizeLogText(value, maxLength = 120) {
     const normalized = String(value || '').replace(/\s+/g, ' ').trim();
     if (!normalized) return '';
     return normalized.length > maxLength
-        ? `${normalized.slice(0, Math.max(0, maxLength - 1))}…`
+        ? `${normalized.slice(0, Math.max(0, maxLength - 3))}...`
         : normalized;
+}
+
+function wantsJsonResponse(req) {
+    const accept = String(req.headers.accept || '').toLowerCase();
+    const contentType = String(req.headers['content-type'] || '').toLowerCase();
+    const secFetchDest = String(req.headers['sec-fetch-dest'] || '').toLowerCase();
+
+    return !!(
+        req.xhr
+        || accept.includes('json')
+        || contentType.includes('json')
+        || secFetchDest === 'empty'
+        || req.path.startsWith('/snapshot')
+        || req.path.startsWith('/send')
+    );
 }
 
 export function setSignedAuthCookie(res, { authCookieName, authToken }) {
@@ -91,7 +106,7 @@ export function registerAuthMiddleware(app, {
             return next();
         }
 
-        if (req.xhr || req.headers.accept?.includes('json') || req.path.startsWith('/snapshot') || req.path.startsWith('/send')) {
+        if (wantsJsonResponse(req)) {
             res.status(401).json({ error: 'Unauthorized' });
         } else {
             res.redirect('/login.html');
