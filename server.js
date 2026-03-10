@@ -63,7 +63,7 @@ async function main() {
     let initialCdpError = null;
 
     try {
-        await initCDP(state);
+        await initCDP(state, { ports: PORTS });
     } catch (err) {
         initialCdpError = err;
         const launchResult = await launchcursorWithCDP({
@@ -73,7 +73,7 @@ async function main() {
         });
         if (launchResult?.ready) {
             try {
-                await initCDP(state);
+                await initCDP(state, { ports: PORTS });
             } catch (retryErr) {
                 initialCdpError = retryErr;
             }
@@ -122,7 +122,7 @@ async function main() {
             stopGeneration
         });
 
-        startPolling(state, wss, { POLL_INTERVAL });
+        startPolling(state, wss, { POLL_INTERVAL, ports: PORTS });
 
         // Kill any existing process on the port before starting
         await killPortProcess(SERVER_PORT);

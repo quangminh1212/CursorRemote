@@ -48,7 +48,7 @@ export async function getAppStateForApi(state, cdp, { maxAgeMs = 1500 } = {}) {
     }
 
     const request = (async () => {
-        const appState = await getAppState(cdp);
+        const appState = await getAppState(cdp, { lastAppState: state.lastAppState });
         rememberAppStateSample(state, appState);
         return appState;
     })().finally(() => {
@@ -64,9 +64,9 @@ export async function getAppStateForApi(state, cdp, { maxAgeMs = 1500 } = {}) {
 
 // --- CDP initialization ---
 
-export async function initCDP(state) {
+export async function initCDP(state, { ports } = {}) {
     console.log('Discovering Cursor CDP endpoint...');
-    const cdpInfo = await discoverCDP();
+    const cdpInfo = await discoverCDP(ports);
     console.log(`Found cursor on port ${cdpInfo.port}`);
 
     console.log('Connecting to CDP...');
@@ -76,7 +76,7 @@ export async function initCDP(state) {
 
 // --- Background polling ---
 
-export async function startPolling(state, wss, { POLL_INTERVAL = 500 } = {}) {
+export async function startPolling(state, wss, { POLL_INTERVAL = 500, ports } = {}) {
     let lastErrorLog = 0;
     let isConnecting = false;
 
@@ -100,7 +100,7 @@ export async function startPolling(state, wss, { POLL_INTERVAL = 500 } = {}) {
                 state.cdpConnection = null;
             }
             try {
-                await initCDP(state);
+                await initCDP(state, { ports });
                 if (state.cdpConnection) {
                     console.log('CDP Connection established from polling loop');
                     isConnecting = false;
@@ -113,7 +113,7 @@ export async function startPolling(state, wss, { POLL_INTERVAL = 500 } = {}) {
         }
 
         try {
-            const appState = await getAppState(state.cdpConnection);
+            const appState = await getAppState(state.cdpConnection, { lastAppState: state.lastAppState });
             if (appState && typeof appState === 'object') {
                 const previousAppState = state.lastAppState;
                 rememberAppStateSample(state, appState);
