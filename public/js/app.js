@@ -87,6 +87,28 @@ function setTextContent(element, value) {
     if (element) element.textContent = value;
 }
 
+function getComposerPlaceholder() {
+    if (document.body.classList.contains('home-screen')) {
+        return HOME_COMPOSER_PLACEHOLDER;
+    }
+
+    const modeLabel = getModeDisplayLabel(currentMode || modeText.textContent || 'Agent');
+    return `${modeLabel}, @ for context, / for commands`;
+}
+
+function updateComposerPlaceholder() {
+    if (!messageInput) return;
+    messageInput.placeholder = getComposerPlaceholder();
+}
+
+function updateComposerActionState() {
+    if (!sendBtn || !messageInput) return;
+    const hasText = !!messageInput.value.trim();
+    sendBtn.classList.toggle('is-idle-mic', !hasText);
+    sendBtn.setAttribute('aria-label', hasText ? 'Send' : 'Voice');
+    sendBtn.setAttribute('data-tooltip', hasText ? 'Send' : 'Voice');
+}
+
 function normalizeChatTitle(title) {
     return typeof title === 'string' ? title.trim() : '';
 }
@@ -415,6 +437,10 @@ let lastModelDropdownState = null;
 let modelDropdownMutationPromise = null;
 let activeChatTitle = '';
 let lastChatTabs = [];
+let historyChatsCache = [];
+let historyActiveTitle = '';
+let historySearchQuery = '';
+let historyArchivedExpanded = false;
 let restartCursorPending = false;
 let selectChatRequestId = 0;
 let appStateRequestInFlight = null;
@@ -883,11 +909,13 @@ function setCurrentModeValue(value) {
     }
     modeText.textContent = displayValue;
     modeBtn.dataset.mode = displayValue.toLowerCase();
+    updateComposerPlaceholder();
     return displayValue;
 }
 
 setCurrentModeValue(currentMode);
 applyTheme(localStorage.getItem('crTheme') || 'dark');
+updateComposerActionState();
 
 function normalizeModeDropdownState(data = {}) {
     const currentRaw = data.current && data.current !== 'Unknown' ? data.current : currentMode;
@@ -1007,7 +1035,7 @@ function timeAgo(dateStr) {
 
 function setHomeScreen(enabled) {
     document.body.classList.toggle('home-screen', enabled);
-    messageInput.placeholder = enabled ? HOME_COMPOSER_PLACEHOLDER : DEFAULT_COMPOSER_PLACEHOLDER;
+    updateComposerPlaceholder();
     refreshBtn.setAttribute('aria-label', enabled ? 'New Chat' : 'Refresh');
     refreshBtn.setAttribute('data-tooltip', enabled ? 'New Chat' : 'Refresh');
     fullscreenBtn.setAttribute('aria-label', enabled ? 'Close' : document.fullscreenElement ? 'Exit Fullscreen' : 'Fullscreen');
@@ -1272,6 +1300,70 @@ ${snapshotRootScope} [style*="position: fixed"],
 ${snapshotRootScope} [data-headlessui-state],
 ${snapshotRootScope} [id*="headlessui"] {
     position: absolute !important;
+}
+
+${snapshotRootScope} .announcement-modal,
+${snapshotRootScope} [role="alert"],
+${snapshotRootScope} [aria-live="assertive"] {
+    display: block !important;
+    position: relative !important;
+    inset: auto !important;
+    margin: 10px 0 14px !important;
+    padding: 14px 16px !important;
+    background: #47484c !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    border-radius: 12px !important;
+    color: rgba(255, 255, 255, 0.92) !important;
+    box-shadow: none !important;
+    overflow: hidden !important;
+}
+
+${snapshotRootScope} .announcement-modal-close-button,
+${snapshotRootScope} .announcement-modal button[aria-label*="close" i],
+${snapshotRootScope} .announcement-modal button[title*="close" i] {
+    position: absolute !important;
+    top: 10px !important;
+    right: 10px !important;
+    width: 24px !important;
+    height: 24px !important;
+    border: 0 !important;
+    background: transparent !important;
+    color: rgba(255, 255, 255, 0.56) !important;
+    padding: 0 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    font-size: 18px !important;
+    line-height: 1 !important;
+}
+
+${snapshotRootScope} .announcement-modal-close-button::before,
+${snapshotRootScope} .announcement-modal button[aria-label*="close" i]::before,
+${snapshotRootScope} .announcement-modal button[title*="close" i]::before {
+    content: '×' !important;
+}
+
+${snapshotRootScope} .announcement-modal strong,
+${snapshotRootScope} .announcement-modal b {
+    display: block !important;
+    position: relative !important;
+    margin: 0 28px 8px 0 !important;
+    padding-left: 24px !important;
+    font-size: 14px !important;
+    line-height: 1.35 !important;
+    font-weight: 600 !important;
+    color: rgba(255, 255, 255, 0.96) !important;
+}
+
+${snapshotRootScope} .announcement-modal strong::before,
+${snapshotRootScope} .announcement-modal b::before {
+    content: '' !important;
+    position: absolute !important;
+    left: 0 !important;
+    top: 1px !important;
+    width: 16px !important;
+    height: 16px !important;
+    background: center / contain no-repeat url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23b8bac0' stroke-width='1.35' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 2.2 13.2 12a1 1 0 0 1-.88 1.5H3.68A1 1 0 0 1 2.8 12L8 2.2Z'/%3E%3Cpath d='M8 5.5v3.4'/%3E%3Ccircle cx='8' cy='11.5' r='.55' fill='%23b8bac0' stroke='none'/%3E%3C/svg%3E") !important;
 }
 
 ${snapshotRootScope} [style*="color: rgb(0, 0, 0)"],
@@ -2061,7 +2153,10 @@ function scrollToBottom() {
 // --- Inputs ---
 async function sendMessage() {
     const message = messageInput.value.trim();
-    if (!message) return;
+    if (!message) {
+        messageInput.focus();
+        return;
+    }
 
     // Optimistic UI updates
     const previousValue = messageInput.value;
@@ -2069,6 +2164,7 @@ async function sendMessage() {
     messageInput.style.height = 'auto'; // Reset height
     messageInput.blur(); // Close keyboard on mobile immediately
     syncShellPromptFromComposer('');
+    updateComposerActionState();
 
     sendBtn.disabled = true;
     sendBtn.style.opacity = '0.5';
@@ -2136,6 +2232,7 @@ messageInput.addEventListener('input', function () {
     this.style.height = 'auto';
     this.style.height = (this.scrollHeight) + 'px';
     syncShellPromptFromComposer(this.value);
+    updateComposerActionState();
 });
 
 // --- File Attach Logic ---
@@ -2383,7 +2480,7 @@ document.addEventListener('click', (e) => {
 });
 
 // --- Chat History Logic ---
-async function showChatHistory() {
+showChatHistory = async function () {
     const historyLayer = document.getElementById('historyLayer');
     const historyList = document.getElementById('historyList');
 
@@ -2539,6 +2636,263 @@ if (homeRecentsLink) {
         showChatHistory();
     });
 }
+
+const HISTORY_SECTION_ORDER = ['Today', 'Yesterday', 'Recent', 'Earlier'];
+
+function normalizeHistorySection(section = '') {
+    const value = String(section || '').trim().toLowerCase();
+    if (value === 'today') return 'Today';
+    if (value === 'yesterday') return 'Yesterday';
+    if (value === 'archived') return 'Archived';
+    if (value === 'earlier' || value === 'older') return 'Earlier';
+    return 'Recent';
+}
+
+function getHistoryAnchor() {
+    if (historyQuickBtn && historyQuickBtn.offsetParent !== null) return historyQuickBtn;
+    if (historyBtn && historyBtn.offsetParent !== null) return historyBtn;
+    return historyQuickBtn || historyBtn || null;
+}
+
+function positionHistoryPopover() {
+    if (!historyLayer || !historyLayer.classList.contains('show')) return;
+    const anchor = getHistoryAnchor();
+    if (!anchor) return;
+
+    const rect = anchor.getBoundingClientRect();
+    const panelWidth = Math.min(320, window.innerWidth - 16);
+    const panelHeight = Math.min(460, window.innerHeight - 72);
+    const topBelow = rect.bottom + 8;
+    const topAbove = rect.top - panelHeight - 8;
+    const top = topBelow + panelHeight <= window.innerHeight - 8
+        ? topBelow
+        : Math.max(8, topAbove);
+    const right = Math.max(8, window.innerWidth - rect.right);
+
+    historyLayer.style.top = `${Math.max(8, top)}px`;
+    historyLayer.style.right = `${right}px`;
+    historyLayer.style.width = `${panelWidth}px`;
+    historyLayer.style.maxHeight = `${panelHeight}px`;
+}
+
+function renderHistoryState(html) {
+    if (!historyList) return;
+    historyList.innerHTML = html;
+    positionHistoryPopover();
+}
+
+function renderHistoryItems(items = [], activeTitle = '') {
+    return items.map((chat) => {
+        const safeTitle = escapeHtmlAttribute(chat.title || '');
+        const isCurrent = chatTitlesMatch(chat.title, activeTitle);
+        return `<button class="history-item${isCurrent ? ' current' : ''}" type="button" data-chat-title="${safeTitle}">
+            <span class="history-item-icon" aria-hidden="true"></span>
+            <span class="history-item-title">${escapeHtml(chat.title || '')}</span>
+        </button>`;
+    }).join('');
+}
+
+function renderHistoryListContent() {
+    if (!historyList) return;
+
+    const query = historySearchQuery.trim().toLowerCase();
+    const visibleChats = historyChatsCache.filter((chat) => {
+        const title = String(chat?.title || '').toLowerCase();
+        return !query || title.includes(query);
+    });
+
+    if (!visibleChats.length) {
+        renderHistoryState(`
+            <div class="history-search-wrap">
+                <input class="history-search-input" type="text" value="${escapeHtmlAttribute(historySearchQuery)}" placeholder="Search Agents..." aria-label="Search history">
+            </div>
+            <div class="history-state-container compact">
+                <div class="history-state-title">No matching conversations</div>
+                <div class="history-state-desc">Try a different keyword or start a new chat.</div>
+            </div>
+            <button class="history-collapsed-row" type="button" data-history-toggle="archived">
+                <span class="history-collapsed-chevron" aria-hidden="true">${historyArchivedExpanded ? '&#709;' : '&#8250;'}</span>
+                <span>Archived</span>
+            </button>
+        `);
+        return;
+    }
+
+    const sections = new Map();
+    const archivedChats = [];
+    visibleChats.forEach((chat) => {
+        const section = normalizeHistorySection(chat?.section);
+        if (section === 'Archived') {
+            archivedChats.push(chat);
+            return;
+        }
+        if (!sections.has(section)) {
+            sections.set(section, []);
+        }
+        sections.get(section).push(chat);
+    });
+
+    let html = `
+        <div class="history-search-wrap">
+            <input class="history-search-input" type="text" value="${escapeHtmlAttribute(historySearchQuery)}" placeholder="Search Agents..." aria-label="Search history">
+        </div>
+    `;
+
+    HISTORY_SECTION_ORDER.forEach((section) => {
+        const items = sections.get(section);
+        if (!items?.length) return;
+        html += `<div class="history-section-label">${section}</div>`;
+        html += `<div class="history-items-group">${renderHistoryItems(items, historyActiveTitle)}</div>`;
+    });
+
+    html += `
+        <button class="history-collapsed-row${historyArchivedExpanded ? ' expanded' : ''}" type="button" data-history-toggle="archived">
+            <span class="history-collapsed-chevron" aria-hidden="true">${historyArchivedExpanded ? '&#709;' : '&#8250;'}</span>
+            <span>Archived</span>
+        </button>
+    `;
+
+    if (historyArchivedExpanded && archivedChats.length) {
+        html += `<div class="history-items-group history-archived-group">${renderHistoryItems(archivedChats, historyActiveTitle)}</div>`;
+    }
+
+    historyList.innerHTML = html;
+    positionHistoryPopover();
+}
+
+showChatHistory = async function () {
+    renderHistoryState(`
+        <div class="history-state-container">
+            <div class="history-spinner"></div>
+            <div class="history-state-text">Loading History...</div>
+        </div>
+    `);
+    historyLayer.classList.add('show');
+    positionHistoryPopover();
+    historyBtn.style.opacity = '1';
+
+    try {
+        const res = await fetchWithAuth('/chat-history');
+        const data = await res.json();
+        if (data?.activeTitle) {
+            setActiveChatTitle(data.activeTitle);
+        } else {
+            updateActiveChatTitleFromHistory(data.chats, true);
+        }
+
+        if (data.error) {
+            renderHistoryState(`
+                <div class="history-state-container">
+                    <div class="history-state-icon"></div>
+                    <div class="history-state-title">Error loading history</div>
+                    <div class="history-state-desc">${escapeHtml(data.error)}</div>
+                    <button class="history-new-btn mt-4" onclick="hideChatHistory(); startNewChat();">
+                        <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="12" y1="5" x2="12" y2="19"></line>
+                            <line x1="5" y1="12" x2="19" y2="12"></line>
+                        </svg>
+                        Start New Conversation
+                    </button>
+                </div>
+            `);
+            applyHistoryStateIcon('warning');
+            return;
+        }
+
+        historyChatsCache = Array.isArray(data.chats) ? data.chats.slice() : [];
+        historyActiveTitle = normalizeChatTitle(data.activeTitle || activeChatTitle);
+        historySearchQuery = '';
+        historyArchivedExpanded = false;
+
+        if (!historyChatsCache.length) {
+            renderHistoryState(`
+                <div class="history-state-container">
+                    <div class="history-state-icon"></div>
+                    <div class="history-state-title">No conversations yet</div>
+                    <div class="history-state-desc">Start a new conversation to see them here.</div>
+                </div>
+            `);
+            applyHistoryStateIcon('empty');
+            return;
+        }
+
+        renderHistoryListContent();
+    } catch (e) {
+        renderHistoryState(`
+            <div class="history-state-container">
+                <div class="history-state-icon"></div>
+                <div class="history-state-title">Connection Error</div>
+                <div class="history-state-desc">Failed to reach the server.</div>
+            </div>
+        `);
+        applyHistoryStateIcon('offline');
+    }
+};
+
+hideChatHistory = function () {
+    historyLayer.classList.remove('show');
+    historyLayer.style.top = '';
+    historyLayer.style.right = '';
+    historyLayer.style.width = '';
+    historyLayer.style.maxHeight = '';
+    try {
+        fetchWithAuth('/close-history', { method: 'POST' });
+    } catch (e) {
+        console.error('Failed to close history on desktop:', e);
+    }
+};
+
+openHistoryPanel = function (e) {
+    if (e) e.stopPropagation();
+    settingsDropdown.classList.remove('open');
+    showChatHistory();
+};
+
+if (historyList) {
+    historyList.addEventListener('input', (e) => {
+        const input = e.target.closest('.history-search-input');
+        if (!input) return;
+        historySearchQuery = input.value || '';
+        renderHistoryListContent();
+        const nextInput = historyList.querySelector('.history-search-input');
+        if (nextInput) {
+            nextInput.focus();
+            nextInput.setSelectionRange(historySearchQuery.length, historySearchQuery.length);
+        }
+    });
+
+    historyList.addEventListener('click', (e) => {
+        const toggle = e.target.closest('[data-history-toggle="archived"]');
+        if (toggle) {
+            historyArchivedExpanded = !historyArchivedExpanded;
+            renderHistoryListContent();
+            return;
+        }
+
+        const item = e.target.closest('.history-item[data-chat-title]');
+        if (!item) return;
+
+        const title = item.getAttribute('data-chat-title');
+        if (!title) return;
+        hideChatHistory();
+        selectChat(title);
+    });
+};
+
+document.addEventListener('click', (e) => {
+    if (!historyLayer.classList.contains('show')) return;
+    if (historyLayer.contains(e.target)) return;
+    if (historyQuickBtn?.contains(e.target) || historyBtn?.contains(e.target)) return;
+    hideChatHistory();
+});
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && historyLayer.classList.contains('show')) {
+        hideChatHistory();
+    }
+});
+
+window.addEventListener('resize', positionHistoryPopover);
 
 if (headerChatTabs) {
     headerChatTabs.addEventListener('click', (e) => {
