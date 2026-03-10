@@ -1,8 +1,9 @@
 import { evaluateCursor } from './cdp-eval.js';
-import { summarizeLogText } from './logger.js';
+import { summarizeLogText, summarizeAppStateForLog } from './logger.js';
+import { getDropdownOptions } from './actions/mode-model.js';
 
 // Get App State (Mode & Model)
-async function getAppState(cdp) {
+async function getAppState(cdp, { lastAppState = null } = {}) {
     const result = await evaluateCursor(cdp, `
         const chatTabs = __cr.getChatTabs();
         return {
