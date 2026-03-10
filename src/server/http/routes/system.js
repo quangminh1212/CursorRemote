@@ -141,6 +141,7 @@ export function registerSystemRoutes(app, {
     certsExist,
     getCdpConnection,
     getAppState,
+    getAppStateForApi,
     getJson,
     getLocalIP,
     getSnapshot,
@@ -176,38 +177,60 @@ export function registerSystemRoutes(app, {
             return res.status(503).json({ error: 'No live snapshot available' });
         }
 
-        if (typeof getAppState === 'function') {
-            try {
-                const appState = await getAppState(cdpConnection);
-                const hasLiveCursorView = !!(
-                    appState?.hasChat
-                    || appState?.editorFound
-                    || (Array.isArray(appState?.chatTabs) && appState.chatTabs.length > 0)
-                    || appState?.activeChatTitle
-                );
+        let appState = null;
+        let appStateSource = null;
+        let appStateValidationError = null;
 
-                if (!hasLiveCursorView) {
-                    trace.finish({ error: 'No live chat available' }, {
-                        httpStatus: 503,
-                        appState: {
-                            mode: summarizeLogText(appState?.mode || '', 32) || undefined,
-                            model: summarizeLogText(appState?.model || '', 48) || undefined,
-                            hasChat: !!appState?.hasChat,
-                            editorFound: !!appState?.editorFound
-                        }
-                    });
-                    return res.status(503).json({ error: 'No live chat available' });
-                }
+        if (typeof getAppStateForApi === 'function' || typeof getAppState === 'function') {
+            try {
+                const appStateResult = typeof getAppStateForApi === 'function'
+                    ? await getAppStateForApi(cdpConnection)
+                    : { state: await getAppState(cdpConnection, {}), source: 'live' };
+                appState = appStateResult?.state || null;
+                appStateSource = appStateResult?.source || null;
             } catch (error) {
-                trace.fail(error, { httpStatus: 503, stage: 'live_snapshot_validation' });
-                return res.status(503).json({ error: 'Live snapshot validation failed' });
+                appStateValidationError = error;
+                trace.fail(error, {
+                    httpStatus: 503,
+                    stage: 'live_snapshot_validation',
+                    fallbackToCachedSnapshot: true
+                });
             }
+        }
+
+        const hasLiveCursorView = appState
+            ? !!(
+                appState?.hasChat
+                || appState?.editorFound
+                || (Array.isArray(appState?.chatTabs) && appState.chatTabs.length > 0)
+                || appState?.activeChatTitle
+            )
+            : null;
+
+        if (hasLiveCursorView === false) {
+            trace.finish({ error: 'No live chat available' }, {
+                httpStatus: 503,
+                appStateSource: appStateSource || undefined,
+                appState: {
+                    mode: summarizeLogText(appState?.mode || '', 32) || undefined,
+                    model: summarizeLogText(appState?.model || '', 48) || undefined,
+                    hasChat: !!appState?.hasChat,
+                    editorFound: !!appState?.editorFound
+                }
+            });
+            return res.status(503).json({ error: 'No live chat available' });
         }
 
         const snapshot = getSnapshot();
         if (!snapshot) {
-            trace.finish({ error: 'No snapshot available yet' }, { httpStatus: 503 });
-            return res.status(503).json({ error: 'No snapshot available yet' });
+            const snapshotError = appStateValidationError
+                ? 'Live snapshot validation failed'
+                : 'No snapshot available yet';
+            trace.finish({ error: snapshotError }, {
+                httpStatus: 503,
+                appStateSource: appStateSource || undefined
+            });
+            return res.status(503).json({ error: snapshotError });
         }
 
         res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -217,6 +240,8 @@ export function registerSystemRoutes(app, {
             chatTabCount: Array.isArray(snapshot.chatTabs) ? snapshot.chatTabs.length : 0,
             htmlSize: snapshot.stats?.htmlSize || snapshot.html?.length || 0,
             hash: snapshot.hash || undefined
+        }, {
+            appStateSource: appStateSource || undefined
         });
         res.json(snapshot);
     });

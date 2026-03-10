@@ -267,7 +267,7 @@ export function registerCursorRoutes(app, {
 
         const appStateResult = getAppStateForApi
             ? await getAppStateForApi(cdpConnection)
-            : { state: await getAppState(cdpConnection), source: 'live' };
+            : { state: await getAppState(cdpConnection, {}), source: 'live' };
         trace.finish(appStateResult.state, { cdpConnected: true, source: appStateResult.source });
         res.json(appStateResult.state);
     });
