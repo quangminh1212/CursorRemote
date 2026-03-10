@@ -84,8 +84,15 @@ const HOME_COMPOSER_PLACEHOLDER = 'Add a follow-up';
 const DEFAULT_APP_TITLE = appBrandTitle?.textContent || 'Cursor Remote';
 const DEFAULT_NEW_CHAT_LABEL = newChatLabel?.textContent || 'New Chat';
 const DEFAULT_RESTART_CURSOR_LABEL = restartCursorCdpBtn?.querySelector('.settings-option-label')?.textContent || 'Restart Cursor';
-const SNAPSHOT_REVALIDATE_INTERVAL = 4000;
-const SNAPSHOT_STATE_CHANGE_RELOAD_DELAYS = [150, 900];
+const APP_STATE_REVALIDATE_INTERVAL = 2500;
+const SNAPSHOT_REVALIDATE_INTERVAL = 1500;
+const CHAT_STATUS_REVALIDATE_INTERVAL = 4000;
+const SNAPSHOT_STATE_CHANGE_RELOAD_DELAYS = [60, 220, 700];
+const FAST_ACTION_SNAPSHOT_DELAYS = [80, 220, 550];
+const COMMAND_ACTION_SNAPSHOT_DELAYS = [120, 360, 900];
+const NEW_CHAT_SNAPSHOT_DELAYS = [160, 420, 900];
+const FILE_UPLOAD_SNAPSHOT_DELAYS = [250, 700];
+const ACTION_STATUS_RECHECK_DELAY = 450;
 
 function setTextContent(element, value) {
     if (element) element.textContent = value;
@@ -453,6 +460,8 @@ let queuedForcedAppStateRefreshPromise = null;
 let appStateRequestId = 0;
 let latestAppliedAppStateRequestId = 0;
 let snapshotRequestInFlight = null;
+let queuedSnapshotReloadRequested = false;
+let queuedSnapshotReloadExpectedHash = '';
 
 function setHasChatTabs(hasTabs) {
     document.body.classList.toggle('has-chat-tabs', !!hasTabs);
@@ -928,4 +937,3 @@ function setCurrentModeValue(value) {
 setCurrentModeValue(currentMode);
 applyTheme(localStorage.getItem('crTheme') || 'dark');
 updateComposerActionState();
-

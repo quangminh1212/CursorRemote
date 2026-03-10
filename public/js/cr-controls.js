@@ -28,7 +28,7 @@ async function sendMessage() {
             const newChatData = await newChatRes.json();
             if (newChatData.success) {
                 // Wait for the new chat to be ready
-                await new Promise(r => setTimeout(r, 800));
+                await new Promise(r => setTimeout(r, 450));
                 chatIsOpen = true;
             }
         }
@@ -39,10 +39,9 @@ async function sendMessage() {
             body: JSON.stringify({ message })
         });
 
-        // Always reload snapshot to check if message appeared
-        setTimeout(loadSnapshot, 300);
-        setTimeout(loadSnapshot, 800);
-        setTimeout(checkChatStatus, 1000);
+        // Prioritize fast snapshot refresh right after send.
+        queueSnapshotReload({ delays: FAST_ACTION_SNAPSHOT_DELAYS });
+        setTimeout(checkChatStatus, ACTION_STATUS_RECHECK_DELAY);
 
         // Don't revert the input - if user sees the message in chat, it was sent
         // Only log errors for debugging, don't show alert popups
@@ -52,7 +51,7 @@ async function sendMessage() {
     } catch (e) {
         // Network error - still try to refresh in case it went through
         console.error('Send error:', e);
-        setTimeout(loadSnapshot, 500);
+        queueSnapshotReload({ delays: FAST_ACTION_SNAPSHOT_DELAYS });
     } finally {
         sendBtn.disabled = false;
         sendBtn.style.opacity = '1';
@@ -181,9 +180,8 @@ fileInput.addEventListener('change', async () => {
     // Reset file input so the same file can be re-selected
     fileInput.value = '';
 
-    // Reload snapshot to see the attached file in chat
-    setTimeout(loadSnapshot, 1000);
-    setTimeout(loadSnapshot, 2500);
+    // Reload snapshot to see the attached file in chat.
+    queueSnapshotReload({ delays: FILE_UPLOAD_SNAPSHOT_DELAYS });
 });
 
 function formatFileSize(bytes) {
@@ -215,7 +213,7 @@ async function syncScrollToDesktop() {
             setTimeout(() => {
                 loadSnapshot();
                 snapshotReloadPending = false;
-            }, 300);
+            }, 120);
         }
     } catch (e) {
         console.log('Scroll sync failed:', e.message);
@@ -271,7 +269,7 @@ stopBtn.addEventListener('click', async () => {
     } catch (e) { }
     setTimeout(() => stopBtn.style.opacity = '1', 500);
     // Re-sync state from desktop
-    setTimeout(fetchAppState, 1000);
+    setTimeout(fetchAppState, 300);
 });
 
 // --- New Chat Logic ---
@@ -285,10 +283,9 @@ async function startNewChat() {
 
         if (data.success) {
             setActiveChatTitle('');
-            // Reload snapshot to show new empty chat
-            setTimeout(loadSnapshot, 500);
-            setTimeout(loadSnapshot, 1000);
-            setTimeout(checkChatStatus, 1500);
+            // Reload snapshot quickly to show the new conversation.
+            queueSnapshotReload({ delays: NEW_CHAT_SNAPSHOT_DELAYS });
+            setTimeout(checkChatStatus, ACTION_STATUS_RECHECK_DELAY);
         } else {
             console.error('Failed to start new chat:', data.error);
         }
@@ -784,10 +781,9 @@ async function selectChat(title) {
             setActiveChatTitle(data.title || normalizedTitle);
             setHomeScreen(false);
             fetchAppState();
-            setTimeout(loadSnapshot, 300);
-            setTimeout(fetchAppState, 600);
-            setTimeout(loadSnapshot, 800);
-            setTimeout(checkChatStatus, 1000);
+            queueSnapshotReload({ delays: FAST_ACTION_SNAPSHOT_DELAYS });
+            setTimeout(fetchAppState, 300);
+            setTimeout(checkChatStatus, ACTION_STATUS_RECHECK_DELAY);
             return true;
         } else {
             setActiveChatTitle(previousTitle);

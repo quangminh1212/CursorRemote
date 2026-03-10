@@ -231,8 +231,7 @@ function connectWebSocket() {
         // Hash-based dedup: only fetch if content actually changed
         if (data.type === 'snapshot_update' && autoRefreshEnabled && !userIsScrolling) {
             if (data.hash && data.hash === lastRenderedHash) return; // Skip identical
-            lastRenderedHash = data.hash || '';
-            loadSnapshot();
+            loadSnapshot({ expectedHash: data.hash || '' });
         }
     };
 
@@ -273,6 +272,12 @@ function scheduleRender() {
 function renderSnapshot(data) {
     chatIsOpen = true;
     hasSnapshotLoaded = true;
+    if (data?.hash) {
+        lastRenderedHash = data.hash;
+        if (queuedSnapshotReloadExpectedHash === data.hash) {
+            queuedSnapshotReloadExpectedHash = '';
+        }
+    }
     renderHeaderChatTabs(data.chatTabs, data.activeChatTitle);
 
     setHomeScreen(false);
@@ -1044,10 +1049,18 @@ ${snapshotRootScope} [data-message-kind="tool"] {
 }
 
 // --- Rendering (HTTP fallback - used for initial load and manual refresh) ---
-async function loadSnapshot() {
+async function loadSnapshot({ expectedHash = '' } = {}) {
+    const normalizedExpectedHash = String(expectedHash || '').trim();
+    if (normalizedExpectedHash) {
+        queuedSnapshotReloadExpectedHash = normalizedExpectedHash;
+    }
+
     if (snapshotRequestInFlight) {
+        queuedSnapshotReloadRequested = true;
         return snapshotRequestInFlight;
     }
+
+    const requestExpectedHash = queuedSnapshotReloadExpectedHash;
 
     const request = (async () => {
         try {
@@ -1084,12 +1097,32 @@ async function loadSnapshot() {
             const data = await response.json();
             renderSnapshot(data);
 
+            const responseHash = String(data?.hash || '').trim();
+            if (requestExpectedHash && responseHash && requestExpectedHash !== responseHash) {
+                queuedSnapshotReloadExpectedHash = requestExpectedHash;
+                queuedSnapshotReloadRequested = true;
+            } else if (!responseHash && requestExpectedHash) {
+                queuedSnapshotReloadExpectedHash = requestExpectedHash;
+                queuedSnapshotReloadRequested = true;
+            } else if (responseHash && queuedSnapshotReloadExpectedHash === responseHash) {
+                queuedSnapshotReloadExpectedHash = '';
+            }
+
         } catch (err) {
             console.error(err);
         }
     })().finally(() => {
         if (snapshotRequestInFlight === request) {
             snapshotRequestInFlight = null;
+        }
+
+        if (queuedSnapshotReloadRequested) {
+            queuedSnapshotReloadRequested = false;
+            setTimeout(() => {
+                if (!snapshotRequestInFlight) {
+                    loadSnapshot({ expectedHash: queuedSnapshotReloadExpectedHash });
+                }
+            }, 0);
         }
     });
 

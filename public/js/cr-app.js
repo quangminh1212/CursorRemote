@@ -54,11 +54,7 @@ chatContainer.addEventListener('click', async (e) => {
                 })
             });
 
-            // Reload snapshot multiple times to catch the UI change
-            // Desktop animation takes time, so we poll a few times
-            setTimeout(loadSnapshot, 400);   // Quick check
-            setTimeout(loadSnapshot, 800);   // After animation starts
-            setTimeout(loadSnapshot, 1500);  // After animation completes
+            queueSnapshotReload({ delays: FAST_ACTION_SNAPSHOT_DELAYS });
         } catch (e) {
             console.error('Remote click failed:', e);
         }
@@ -95,9 +91,7 @@ chatContainer.addEventListener('click', async (e) => {
                         textContent: label
                     })
                 });
-                setTimeout(loadSnapshot, 500);
-                setTimeout(loadSnapshot, 1500);
-                setTimeout(loadSnapshot, 3000);
+                queueSnapshotReload({ delays: COMMAND_ACTION_SNAPSHOT_DELAYS });
             } catch (err) {
                 console.error('Remote command click failed:', err);
             }
@@ -108,16 +102,16 @@ chatContainer.addEventListener('click', async (e) => {
 // --- Init ---
 updateWorkspaceChrome();
 connectWebSocket();
-// Sync state initially and every 5 seconds to keep phone in sync with desktop changes
+// Sync state periodically to guard against missed WS events.
 fetchAppState();
-setInterval(fetchAppState, 5000);
+setInterval(fetchAppState, APP_STATE_REVALIDATE_INTERVAL);
 setInterval(() => {
     queueSnapshotReload({ delays: [0] });
 }, SNAPSHOT_REVALIDATE_INTERVAL);
 
 // Check chat status initially and periodically
 checkChatStatus();
-setInterval(checkChatStatus, 10000); // Check every 10 seconds
+setInterval(checkChatStatus, CHAT_STATUS_REVALIDATE_INTERVAL);
 
 // --- QR Code Modal ---
 const qrBtn = document.getElementById('qrBtn');
@@ -175,4 +169,3 @@ if (qrUrl) {
         }
     });
 }
-
