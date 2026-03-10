@@ -242,9 +242,9 @@ function buildSnapshotTabsHtml(tabs = [], activeTitle = '') {
         <div class="snapshot-chat-tabs" aria-label="Cursor chat tabs">
             <div class="snapshot-chat-tabs-track">
                 ${normalizedTabs.map((tab) => {
-                    const isActive = tab.active || (!hasExplicitActive && resolvedActiveTitle && chatTitlesMatch(tab.title, resolvedActiveTitle));
-                    const safeTitle = escapeHtmlAttribute(tab.title);
-                    return `
+        const isActive = tab.active || (!hasExplicitActive && resolvedActiveTitle && chatTitlesMatch(tab.title, resolvedActiveTitle));
+        const safeTitle = escapeHtmlAttribute(tab.title);
+        return `
                         <button
                             class="snapshot-chat-tab${isActive ? ' active' : ''}"
                             type="button"
@@ -255,9 +255,12 @@ function buildSnapshotTabsHtml(tabs = [], activeTitle = '') {
                             ${isActive ? 'aria-current="page"' : ''}
                         >
                             <span class="snapshot-chat-tab-label">${escapeHtml(tab.title)}</span>
+                            <span class="snapshot-chat-tab-close" role="button" aria-label="Close tab" title="Close tab">
+                                <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>
+                            </span>
                         </button>
                     `;
-                }).join('')}
+    }).join('')}
             </div>
         </div>
     `;

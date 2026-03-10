@@ -745,6 +745,17 @@ window.addEventListener('resize', positionHistoryPopover);
 
 if (headerChatTabs) {
     headerChatTabs.addEventListener('click', (e) => {
+        // Handle close button click
+        const closeBtn = e.target.closest('.snapshot-chat-tab-close');
+        if (closeBtn) {
+            e.preventDefault();
+            e.stopPropagation();
+            const tab = closeBtn.closest('.snapshot-chat-tab[data-chat-title]');
+            const title = tab?.getAttribute('data-chat-title');
+            if (title) closeTab(title);
+            return;
+        }
+
         const tab = e.target.closest('.snapshot-chat-tab[data-chat-title]');
         if (!tab || tab.disabled) return;
 
@@ -756,6 +767,33 @@ if (headerChatTabs) {
 
         selectChat(title);
     });
+}
+
+// --- Close Chat Tab ---
+async function closeTab(title) {
+    const normalizedTitle = normalizeChatTitle(title);
+    if (!normalizedTitle) return false;
+
+    try {
+        const res = await fetchWithAuth('/close-tab', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title: normalizedTitle })
+        });
+        const data = await res.json();
+
+        if (data.success) {
+            // If closed tab was active, Cursor will switch to another tab
+            fetchAppState({ force: true });
+            queueSnapshotReload({ delays: FAST_ACTION_SNAPSHOT_DELAYS });
+            return true;
+        } else {
+            console.error('Failed to close tab:', data.error || data.reason);
+        }
+    } catch (e) {
+        console.error('Close tab error:', e);
+    }
+    return false;
 }
 
 // --- Select Chat from History ---
@@ -956,9 +994,9 @@ function normalizeModelDropdownState(data = {}) {
                     : rawDescription;
                 return {
                     key: String(toggle?.key || toggle?.label || '')
-                    .trim()
-                    .toLowerCase()
-                    .replace(/\s+/g, '-'),
+                        .trim()
+                        .toLowerCase()
+                        .replace(/\s+/g, '-'),
                     label,
                     description: normalizedDescription,
                     enabled: !!toggle?.enabled
