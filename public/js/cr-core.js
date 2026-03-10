@@ -53,6 +53,7 @@ const historyBtn = document.getElementById('historyBtn');
 const historyQuickBtn = document.getElementById('historyQuickBtn');
 const attachBtn = document.getElementById('attachBtn');
 const fileInput = document.getElementById('fileInput');
+const composerAlertDock = document.getElementById('composerAlertDock');
 const settingsBtn = document.getElementById('settingsBtn');
 const settingsDropdown = document.getElementById('settingsDropdown');
 const fullscreenBtn = document.getElementById('fullscreenBtn');
@@ -118,6 +119,44 @@ function updateComposerActionState() {
     sendBtn.classList.toggle('is-idle-mic', !hasText);
     sendBtn.setAttribute('aria-label', hasText ? 'Send' : 'Voice');
     sendBtn.setAttribute('data-tooltip', hasText ? 'Send' : 'Voice');
+}
+
+function clearComposerAlertDock() {
+    if (!composerAlertDock) return;
+    composerAlertDock.replaceChildren();
+    composerAlertDock.hidden = true;
+    composerAlertDock.classList.remove('has-alerts');
+}
+
+function syncComposerAlertDock() {
+    if (!composerAlertDock || !chatContent) return;
+
+    const alertContainer = chatContent.querySelector('.cr-preserved-alerts');
+    if (!alertContainer) {
+        clearComposerAlertDock();
+        return;
+    }
+
+    const alertClones = Array.from(alertContainer.children)
+        .filter((node) => node instanceof HTMLElement && !!normalizeChatTitle(node.innerText || node.textContent || ''))
+        .map((node) => {
+            const clone = node.cloneNode(true);
+            if (clone instanceof HTMLElement) {
+                clone.classList.add('composer-alert-card');
+            }
+            return clone;
+        });
+
+    alertContainer.remove();
+
+    if (!alertClones.length) {
+        clearComposerAlertDock();
+        return;
+    }
+
+    composerAlertDock.replaceChildren(...alertClones);
+    composerAlertDock.hidden = false;
+    composerAlertDock.classList.add('has-alerts');
 }
 
 function normalizeChatTitle(title) {
@@ -875,16 +914,16 @@ const MODE_DISPLAY_ALIASES = {
     ask: 'Ask'
 };
 const MODEL_FALLBACK_OPTIONS = [
-    { name: 'Composer 1.5', icon: 'cloud' },
-    { name: 'GPT-5.4', icon: 'cloud' },
-    { name: 'GPT-5.3 Codex', icon: 'cloud' },
-    { name: 'Sonnet 4.6', icon: 'cloud' },
-    { name: 'Opus 4.6', icon: 'cloud' },
-    { name: 'Gemini 3 Flash', icon: 'cloud' },
+    { name: 'Composer 1.5', icon: 'brain' },
+    { name: 'GPT-5.3 Codex', icon: 'brain' },
+    { name: 'GPT-5.4', icon: 'brain' },
+    { name: 'Sonnet 4.6', icon: 'brain' },
+    { name: 'Opus 4.6', icon: 'brain' },
+    { name: 'Gemini 3 Flash', icon: 'brain' },
     { name: 'gpt-4', icon: '' }
 ];
 const MODEL_FALLBACK_TOGGLES = [
-    { key: 'auto', label: 'Auto', description: 'Balanced quality and speed, recommended for most tasks', enabled: false },
+    { key: 'auto', label: 'Auto', description: '', enabled: false },
     { key: 'max-mode', label: 'MAX Mode', description: '', enabled: false },
     { key: 'multi-model', label: 'Use Multiple Models', description: '', enabled: false }
 ];

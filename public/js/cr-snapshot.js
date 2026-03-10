@@ -55,16 +55,43 @@ function getModelDropdownFallbackState(overrides = {}) {
             ? currentModel
             : (modelText?.textContent || MODEL_FALLBACK_OPTIONS[0]?.name || 'Auto'));
     const fallbackAutoEnabled = /^auto$/i.test(fallbackCurrent);
+    const fallbackItems = MODEL_FALLBACK_OPTIONS.map((item) => ({
+        value: item.name,
+        icon: item.icon
+    }));
+
+    if (fallbackAutoEnabled) {
+        return {
+            current: fallbackCurrent,
+            options: [],
+            items: [],
+            toggles: [{
+                key: 'auto',
+                label: 'Auto',
+                description: 'Balanced quality and speed, recommended for most tasks',
+                enabled: true
+            }],
+            searchPlaceholder: 'Search models',
+            footerLabel: '',
+            compactAuto: true,
+            expandedItems: fallbackItems,
+            expandedFooterLabel: 'Add Models'
+        };
+    }
 
     return {
         current: fallbackCurrent,
         options: MODEL_FALLBACK_OPTIONS.map(item => item.name),
+        items: fallbackItems,
         toggles: MODEL_FALLBACK_TOGGLES.map(toggle => ({
             ...toggle,
             enabled: toggle.key === 'auto' ? fallbackAutoEnabled : toggle.enabled
         })),
         searchPlaceholder: 'Search models',
-        footerLabel: 'Add Models'
+        footerLabel: 'Add Models',
+        compactAuto: false,
+        expandedItems: [],
+        expandedFooterLabel: ''
     };
 }
 
@@ -75,11 +102,15 @@ function getModelOptionValue(option) {
 }
 
 function getModelOptionIcon(option) {
+    const value = getModelOptionValue(option).toLowerCase();
     if (option && typeof option === 'object' && 'icon' in option) {
-        return String(option.icon || '').trim();
+        const explicitIcon = String(option.icon || '').trim();
+        if (explicitIcon === 'cloud' && value && value !== 'gpt-4') {
+            return 'brain';
+        }
+        return explicitIcon;
     }
 
-    const value = getModelOptionValue(option).toLowerCase();
     const fallback = MODEL_FALLBACK_OPTIONS.find((item) => item.name.toLowerCase() === value);
     return fallback?.icon || '';
 }
@@ -102,8 +133,13 @@ function normalizeModelOptionItems(options = []) {
 }
 
 function getModelOptionIconSvg(iconName = '') {
-    if (iconName !== 'cloud') return '';
-    return `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"><path d="M5.2 12.4h5.4a2.4 2.4 0 0 0 .2-4.8 3.3 3.3 0 0 0-6.4-.8 2.2 2.2 0 0 0 .8 5.6Z"></path></svg>`;
+    if (iconName === 'cloud') {
+        return `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"><path d="M5.2 12.4h5.4a2.4 2.4 0 0 0 .2-4.8 3.3 3.3 0 0 0-6.4-.8 2.2 2.2 0 0 0 .8 5.6Z"></path></svg>`;
+    }
+    if (iconName === 'brain') {
+        return `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5.2 4.4a1.7 1.7 0 0 1 3-1 2.1 2.1 0 0 1 3.1 2.2 1.9 1.9 0 0 1 .5 3.6 2.1 2.1 0 0 1-2.2 3 2 2 0 0 1-3.5.4 1.8 1.8 0 0 1-2.7-2.3A1.9 1.9 0 0 1 4 6.3a1.8 1.8 0 0 1 1.2-1.9"></path><path d="M7.9 3.2v8.9"></path><path d="M6 5.1c.6.2 1 .6 1.2 1.2"></path><path d="M9.7 4.9c-.6.2-1 .6-1.2 1.2"></path><path d="M5.9 8.4c.7 0 1.1.2 1.4.6"></path><path d="M10 8.4c-.7 0-1.1.2-1.4.6"></path></svg>`;
+    }
+    return '';
 }
 
 function timeAgo(dateStr) {
@@ -1032,6 +1068,7 @@ ${snapshotRootScope} [data-message-kind="tool"] {
     if (htmlHash !== lastRenderedHtmlHash) {
         lastRenderedHtmlHash = htmlHash;
         chatContent.innerHTML = renderedHtml;
+        syncComposerAlertDock();
 
         // Ensure dark mode classes are set for Tailwind dark variant activation
         chatContent.classList.add('dark');

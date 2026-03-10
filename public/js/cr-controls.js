@@ -842,6 +842,7 @@ function showEmptyState() {
     lastRenderedHash = '';
     lastRenderedHtmlHash = '';
     pendingSnapshot = null;
+    clearComposerAlertDock();
     setActiveChatTitle('');
     renderHeaderChatTabs([], '');
     renderHomeShell();
@@ -937,16 +938,32 @@ function normalizeModelDropdownState(data = {}) {
     const current = data.current && data.current !== 'Unknown' ? data.current : fallback.current;
 
     if (isLiveModelState) {
+        const previousExpandedItems = normalizeModelOptionItems(
+            Array.isArray(data.expandedItems) && data.expandedItems.length
+                ? data.expandedItems
+                : (Array.isArray(lastModelDropdownState?.items) && lastModelDropdownState.items.length
+                    ? lastModelDropdownState.items
+                    : (Array.isArray(fallback.expandedItems) && fallback.expandedItems.length
+                        ? fallback.expandedItems
+                        : (Array.isArray(fallback.options) ? fallback.options : [])))
+        );
         let toggles = (Array.isArray(data.toggles) ? data.toggles : [])
-            .map((toggle) => ({
-                key: String(toggle?.key || toggle?.label || '')
+            .map((toggle) => {
+                const label = String(toggle?.label || toggle?.key || '').trim();
+                const rawDescription = String(toggle?.description || '').trim();
+                const normalizedDescription = rawDescription.toLowerCase().startsWith(`${label.toLowerCase()} `)
+                    ? rawDescription.slice(label.length).trim()
+                    : rawDescription;
+                return {
+                    key: String(toggle?.key || toggle?.label || '')
                     .trim()
                     .toLowerCase()
                     .replace(/\s+/g, '-'),
-                label: String(toggle?.label || toggle?.key || '').trim(),
-                description: String(toggle?.description || '').trim(),
-                enabled: !!toggle?.enabled
-            }))
+                    label,
+                    description: normalizedDescription,
+                    enabled: !!toggle?.enabled
+                };
+            })
             .filter((toggle) => toggle.key && toggle.label);
 
         if (!toggles.length && (typeof data.autoAvailable === 'boolean' ? data.autoAvailable : /^auto$/i.test(current))) {
@@ -971,6 +988,9 @@ function normalizeModelDropdownState(data = {}) {
 
         const options = items.map((item) => item.value);
         const autoToggle = toggles.find((toggle) => toggle.key === 'auto') || null;
+        const compactAuto = typeof data.compactAuto === 'boolean'
+            ? data.compactAuto
+            : (/^auto$/i.test(current) && !!autoToggle && !options.length);
 
         return {
             current,
@@ -979,9 +999,11 @@ function normalizeModelDropdownState(data = {}) {
             toggles,
             searchPlaceholder: String(data.searchPlaceholder || '').trim(),
             footerLabel: String(data.footerLabel || '').trim(),
-            compactAuto: typeof data.compactAuto === 'boolean'
-                ? data.compactAuto
-                : (/^auto$/i.test(current) && !!autoToggle && !options.length),
+            compactAuto,
+            expandedItems: compactAuto ? previousExpandedItems : [],
+            expandedFooterLabel: compactAuto
+                ? String(data.expandedFooterLabel || lastModelDropdownState?.footerLabel || fallback.expandedFooterLabel || fallback.footerLabel || '').trim()
+                : '',
             live: true
         };
     }
@@ -1031,8 +1053,19 @@ function normalizeModelDropdownState(data = {}) {
         toggles,
         searchPlaceholder: data.searchPlaceholder || fallback.searchPlaceholder,
         footerLabel: data.footerLabel || fallback.footerLabel || '',
-        compactAuto: /^auto$/i.test(current)
+        compactAuto: false
     };
+}
+
+function isLikelyIncompleteLiveModelDropdownState(state) {
+    if (!state || typeof state !== 'object' || !state.live) return false;
+
+    const optionCount = Array.isArray(state.items) ? state.items.length : 0;
+    const toggleCount = Array.isArray(state.toggles) ? state.toggles.length : 0;
+    const hasSearchPlaceholder = !!String(state.searchPlaceholder || '').trim();
+    const hasFooterLabel = !!String(state.footerLabel || '').trim();
+
+    return optionCount <= 1 && toggleCount === 0 && !hasSearchPlaceholder && !hasFooterLabel;
 }
 
 function applyNormalizedModelDropdownState(normalized, { rebuildMenu = false } = {}) {
@@ -1064,6 +1097,10 @@ async function syncModelDropdownState({ rebuildMenu = modelMenu.classList.contai
     }
 
     let lastError = null;
+    const cachedCompleteState = !isLikelyIncompleteLiveModelDropdownState(lastModelDropdownState)
+        ? lastModelDropdownState
+        : null;
+    let lastIncompleteState = null;
 
     for (const delay of delays) {
         if (delay > 0) {
@@ -1077,10 +1114,22 @@ async function syncModelDropdownState({ rebuildMenu = modelMenu.classList.contai
         try {
             const data = await fetchDropdownOptions('model');
             const normalized = normalizeModelDropdownState(data);
+            if (isLikelyIncompleteLiveModelDropdownState(normalized)) {
+                lastIncompleteState = normalized;
+                continue;
+            }
             return applyNormalizedModelDropdownState(normalized, { rebuildMenu });
         } catch (error) {
             lastError = error;
         }
+    }
+
+    if (cachedCompleteState) {
+        return applyNormalizedModelDropdownState(cachedCompleteState, { rebuildMenu });
+    }
+
+    if (lastIncompleteState) {
+        return applyNormalizedModelDropdownState(lastIncompleteState, { rebuildMenu });
     }
 
     if (lastError) {
@@ -1157,9 +1206,18 @@ function buildModelDropdownMenu(menu, state) {
     const searchInput = searchWrap.querySelector('.model-search-input');
     const renderMenuContent = (filterText = '') => {
         const normalizedFilter = String(filterText || '').trim();
-        const visibleToggles = Array.isArray(state.toggles) ? state.toggles : [];
         const autoToggle = getAutoToggle(state);
         const shouldUseCompactAutoMenu = !!state.compactAuto && !normalizedFilter && autoToggle;
+        const renderState = state.compactAuto && normalizedFilter
+            ? {
+                ...state,
+                items: Array.isArray(state.expandedItems) ? state.expandedItems : [],
+                footerLabel: state.expandedFooterLabel || ''
+            }
+            : state;
+        const visibleToggles = state.compactAuto && normalizedFilter
+            ? []
+            : (Array.isArray(state.toggles) ? state.toggles : []);
 
         menu.classList.remove('auto-compact-menu');
         panel.classList.remove('home-auto-model-menu', 'compact-auto-menu');
@@ -1218,9 +1276,9 @@ function buildModelDropdownMenu(menu, state) {
         const listEl = document.createElement('div');
         listEl.className = 'model-options-list';
         contentWrap.appendChild(listEl);
-        renderModelOptionsList(listEl, state, normalizedFilter);
+        renderModelOptionsList(listEl, renderState, normalizedFilter);
 
-        if (state.footerLabel) {
+        if (renderState.footerLabel) {
             const bottomDivider = document.createElement('div');
             bottomDivider.className = 'model-menu-divider';
             contentWrap.appendChild(bottomDivider);
@@ -1230,7 +1288,7 @@ function buildModelDropdownMenu(menu, state) {
             footer.className = 'model-footer-row';
             footer.dataset.action = 'add-models';
             footer.innerHTML = `
-                <span class="model-footer-label">${escapeHtml(state.footerLabel)}</span>
+                <span class="model-footer-label">${escapeHtml(renderState.footerLabel)}</span>
                 <span class="model-footer-chevron" aria-hidden="true">&#8250;</span>
             `;
             contentWrap.appendChild(footer);
@@ -1313,7 +1371,7 @@ function openModelDropdown() {
     );
     applyNormalizedModelDropdownState(immediateState, { rebuildMenu: true });
     toggleDropdown(modelMenu, modelBtn);
-    syncModelDropdownState({ rebuildMenu: true, delays: [0] })
+    syncModelDropdownState({ rebuildMenu: true, delays: [0, 140, 320, 650] })
         .catch((error) => console.error('[SYNC] Failed to open model dropdown', error));
 }
 
@@ -1376,12 +1434,35 @@ async function applyModelSelection(model, prev = currentModel || modelText.textC
                 modelText.textContent = currentModel;
                 updateWorkspaceChrome({ model: currentModel });
                 if (lastModelDropdownState) {
+                    const selectedIsAuto = /^auto$/i.test(currentModel);
                     lastModelDropdownState.current = currentModel;
                     lastModelDropdownState.toggles = (lastModelDropdownState.toggles || []).map((toggle) =>
                         toggle.key === 'auto'
-                            ? { ...toggle, enabled: /^auto$/i.test(currentModel) }
+                            ? { ...toggle, enabled: selectedIsAuto }
                             : toggle
                     );
+                    if (!selectedIsAuto) {
+                        const fallbackState = getModelDropdownFallbackState({ current: currentModel });
+                        const restoredItems = Array.isArray(lastModelDropdownState.items) && lastModelDropdownState.items.length
+                            ? lastModelDropdownState.items
+                            : (Array.isArray(lastModelDropdownState.expandedItems) ? lastModelDropdownState.expandedItems : []);
+                        const items = normalizeModelOptionItems(
+                            restoredItems.length
+                                ? restoredItems
+                                : [{ value: currentModel, icon: getModelOptionIcon(currentModel) }]
+                        ).filter((item) => item.value && !/^auto$/i.test(item.value));
+
+                        lastModelDropdownState.items = items;
+                        lastModelDropdownState.options = items.map((item) => item.value);
+                        lastModelDropdownState.compactAuto = false;
+                        lastModelDropdownState.footerLabel = lastModelDropdownState.footerLabel || lastModelDropdownState.expandedFooterLabel || fallbackState.footerLabel;
+                        lastModelDropdownState.expandedItems = [];
+                        lastModelDropdownState.expandedFooterLabel = '';
+
+                        if (!Array.isArray(lastModelDropdownState.toggles) || lastModelDropdownState.toggles.length < 2) {
+                            lastModelDropdownState.toggles = fallbackState.toggles;
+                        }
+                    }
                 }
                 setTimeout(() => {
                     syncModelDropdownState({ rebuildMenu: modelMenu.classList.contains('show'), delays: [0, 180, 420] });
@@ -1428,7 +1509,11 @@ async function applyModelToggle(toggleKey, enabled) {
                     toggles: Array.isArray(data.toggles) ? data.toggles : [],
                     searchPlaceholder: data.searchPlaceholder || '',
                     footerLabel: data.footerLabel || '',
-                    compactAuto: /^auto$/i.test(data.currentModel || currentModel) && (!Array.isArray(data.options) || !data.options.length)
+                    compactAuto: /^auto$/i.test(data.currentModel || currentModel)
+                        && Array.isArray(data.toggles)
+                        && data.toggles.length === 1
+                        && !data.footerLabel
+                        && (!Array.isArray(data.options) || !data.options.length)
                 });
                 applyNormalizedModelDropdownState(normalized, { rebuildMenu: true });
                 setTimeout(() => {
@@ -1479,6 +1564,20 @@ modelMenu.addEventListener('click', async (e) => {
     const footerRow = e.target.closest('.model-footer-row');
     if (footerRow) {
         e.preventDefault();
+        closeAllDropdowns();
+        try {
+            const res = await fetchWithAuth('/model-menu-action', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'add-models' })
+            });
+            const data = await res.json();
+            if (!res.ok || !data.success) {
+                alert('Error: ' + (data.error || 'Unknown'));
+            }
+        } catch (error) {
+            console.error('Model menu footer action failed:', error);
+        }
         return;
     }
 
