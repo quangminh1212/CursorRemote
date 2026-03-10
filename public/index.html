@@ -187,6 +187,8 @@
             <div class="home-context-agent" id="homeContextAgent">Cursor</div>
         </div>
 
+        <div class="composer-alert-dock" id="composerAlertDock" hidden aria-live="polite" aria-atomic="true"></div>
+
         <div class="input-box">
             <textarea id="messageInput" placeholder="Ask anything, @ to mention, / for workflows" rows="1"></textarea>
             <div class="input-toolbar">
@@ -239,11 +241,11 @@
                 </div>
                 <div class="toolbar-dropdown" id="modelDropdown">
                     <div class="toolbar-chip" id="modelBtn">
+                        <span id="modelText">Auto</span>
                         <svg class="toolbar-chip-caret" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                             stroke-width="2.5">
                             <polyline points="18 15 12 9 6 15"></polyline>
                         </svg>
-                        <span id="modelText">Auto</span>
                     </div>
                     <div class="dropdown-menu" id="modelMenu"></div>
                 </div>

@@ -661,6 +661,55 @@ body {
     z-index: 100;
 }
 
+.composer-alert-dock {
+    display: none;
+    margin: 0 0 8px;
+    gap: 8px;
+}
+
+.composer-alert-dock.has-alerts {
+    display: grid;
+}
+
+.composer-alert-card {
+    position: relative;
+    display: block;
+    margin: 0;
+    padding: 16px 18px;
+    border-radius: 14px;
+    background: rgba(82, 84, 91, 0.98);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.94);
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+    overflow: hidden;
+}
+
+.composer-alert-card button[aria-label*="close" i],
+.composer-alert-card button[title*="close" i],
+.composer-alert-card .announcement-modal-close-button {
+    display: none !important;
+}
+
+.composer-alert-card,
+.composer-alert-card p,
+.composer-alert-card div,
+.composer-alert-card span:not(.codicon) {
+    font-size: 13.5px;
+    line-height: 1.42;
+    color: inherit;
+}
+
+.composer-alert-card > :last-child {
+    margin-bottom: 0;
+}
+
+[data-theme="light"] .composer-alert-card {
+    background: rgba(239, 240, 244, 0.98);
+    border-color: rgba(15, 23, 42, 0.08);
+    color: rgba(17, 24, 39, 0.92);
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+}
+
 .input-section:has(.dropdown-menu.show) {
     z-index: 2101 !important;
 }
@@ -894,10 +943,10 @@ body {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
+    gap: 8px;
     width: 100%;
     margin: 0;
-    padding: 8px 10px 8px 12px;
+    padding: 2px 4px 2px 6px;
     border: none;
     background: transparent;
 }
@@ -905,7 +954,7 @@ body {
 .model-option-main {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: 4px;
     flex: 1 1 auto;
     min-width: 0;
 }
@@ -913,33 +962,34 @@ body {
 .model-option-name {
     flex: 1 1 auto;
     min-width: 0;
-    font-size: 13.5px;
+    font-size: 12px;
     font-weight: 500;
     color: var(--text-main);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    line-height: 17px;
 }
 
 .model-option-icon {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 12px;
-    height: 12px;
+    width: 10px;
+    height: 10px;
     color: rgba(201, 204, 209, 0.62);
     flex-shrink: 0;
 }
 
 .model-option-icon svg {
-    width: 12px;
-    height: 12px;
+    width: 10px;
+    height: 10px;
 }
 
 .model-option-check {
-    min-width: 14px;
+    min-width: 10px;
     text-align: center;
-    font-size: 13px;
+    font-size: 11px;
     color: rgba(255, 255, 255, 0.88);
     opacity: 0;
 }
@@ -973,25 +1023,25 @@ body {
     flex-direction: column;
     gap: 0;
     height: 100%;
-    min-width: 222px;
-    padding: 6px;
+    min-width: 176px;
+    padding: 2px;
 }
 
 .model-search-wrap {
     display: flex;
-    padding: 0 4px 6px;
+    padding: 0 2px 2px;
 }
 
 .model-search-input {
     width: 100%;
-    height: 32px;
+    height: 24px;
     border: 1px solid rgba(255, 255, 255, 0.04);
-    border-radius: 8px;
+    border-radius: 6px;
     background: rgba(255, 255, 255, 0.08);
     color: var(--text-main);
-    padding: 0 12px;
+    padding: 0 8px;
     font: inherit;
-    font-size: 13px;
+    font-size: 12px;
     outline: none;
 }
 
@@ -1025,11 +1075,11 @@ body {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
+    gap: 8px;
     width: 100%;
-    padding: 6px 8px;
+    padding: 2px 6px;
     border: none;
-    border-radius: 8px;
+    border-radius: 6px;
     background: transparent;
     color: var(--text-main);
     cursor: pointer;
@@ -1052,28 +1102,29 @@ body {
 .model-toggle-copy {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 1px;
     min-width: 0;
 }
 
 .model-toggle-title {
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 500;
     color: var(--text-main);
+    line-height: 16px;
 }
 
 .model-toggle-desc {
     color: var(--text-muted);
-    font-size: 11.8px;
-    line-height: 1.25;
-    max-width: 148px;
+    font-size: 11.5px;
+    line-height: 1.2;
+    max-width: 142px;
 }
 
 .model-toggle-switch {
     display: inline-flex;
     align-items: center;
-    width: 32px;
-    height: 18px;
+    width: 24px;
+    height: 14px;
     padding: 2px;
     border-radius: 999px;
     background: rgba(255, 255, 255, 0.16);
@@ -1086,8 +1137,8 @@ body {
 }
 
 .model-toggle-knob {
-    width: 14px;
-    height: 14px;
+    width: 10px;
+    height: 10px;
     border-radius: 50%;
     background: #ffffff;
     transform: translateX(0);
@@ -1096,12 +1147,12 @@ body {
 }
 
 .model-toggle-switch.is-on .model-toggle-knob {
-    transform: translateX(14px);
+    transform: translateX(10px);
 }
 
 .model-menu-divider {
     height: 1px;
-    margin: 4px 0;
+    margin: 4px 0 2px;
     background: rgba(255, 255, 255, 0.08);
 }
 
@@ -1109,11 +1160,11 @@ body {
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
-    gap: 2px;
-    max-height: min(280px, 46vh);
+    gap: 1px;
+    max-height: min(164px, 32vh);
     min-height: 0;
     overflow-y: auto;
-    padding: 2px 0;
+    padding: 0;
 }
 
 .model-footer-row {
@@ -1121,9 +1172,9 @@ body {
     align-items: center;
     justify-content: space-between;
     width: 100%;
-    padding: 8px 10px 6px 12px;
+    padding: 2px 4px 2px 6px;
     border: none;
-    border-radius: 8px;
+    border-radius: 6px;
     background: transparent;
     cursor: default;
     text-align: left;
@@ -1135,7 +1186,7 @@ body {
 }
 
 .model-footer-label {
-    font-size: 13px;
+    font-size: 12px;
 }
 
 .model-footer-chevron {
@@ -1792,7 +1843,7 @@ body.agent-running .toolbar-stop-btn {
 }
 
 #modelDropdown {
-    flex: 1 1 auto;
+    flex: 0 1 auto;
     min-width: 0;
 }
 
@@ -1801,7 +1852,8 @@ body.agent-running .toolbar-stop-btn {
 }
 
 #modelBtn {
-    width: 100%;
+    width: auto;
+    max-width: min(168px, var(--app-stage-inline-room));
     min-width: 0;
 }
 
@@ -1809,9 +1861,9 @@ body.agent-running .toolbar-stop-btn {
     left: auto;
     right: 0;
     min-width: 0;
-    width: min(238px, var(--app-stage-inline-room));
-    max-width: min(238px, var(--app-stage-inline-room));
-    max-height: min(360px, calc(var(--app-stage-height) - 120px));
+    width: min(184px, var(--app-stage-inline-room));
+    max-width: min(184px, var(--app-stage-inline-room));
+    max-height: min(276px, calc(var(--app-stage-height) - 120px));
     overflow: hidden;
     padding: 0;
 }
@@ -1830,8 +1882,8 @@ body.agent-running .toolbar-stop-btn {
 }
 
 #modelText {
-    flex: 1 1 auto;
-    max-width: none;
+    flex: 0 1 auto;
+    max-width: 132px;
 }
 
 .home-recents {
@@ -3365,37 +3417,38 @@ body.home-screen #modeMenu {
 
 body.home-screen #modelMenu {
     min-width: 0;
-    width: min(236px, var(--app-stage-inline-room));
-    max-width: min(236px, var(--app-stage-inline-room));
+    width: min(184px, var(--app-stage-inline-room));
+    max-width: min(184px, var(--app-stage-inline-room));
     padding: 0;
     background: #47474a;
     border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 9px;
+    border-radius: 6px;
     box-shadow: 0 14px 28px rgba(0, 0, 0, 0.42);
 }
 
 body.home-screen #modelMenu .model-menu-panel {
     min-width: 0;
-    padding: 6px 8px 8px;
+    padding: 2px;
 }
 
 body.home-screen #modelMenu.auto-compact-menu {
     min-width: 0;
-    width: min(228px, var(--app-stage-inline-room));
-    max-width: min(228px, var(--app-stage-inline-room));
+    width: min(184px, var(--app-stage-inline-room));
+    max-width: min(184px, var(--app-stage-inline-room));
 }
 
 body.home-screen #modelMenu .model-search-wrap {
-    padding: 0 0 8px;
+    padding: 0 2px 2px;
 }
 
 body.home-screen #modelMenu .model-search-input {
-    height: 31px;
-    padding: 0 10px;
+    height: 24px;
+    padding: 0 8px;
     border-color: rgba(255, 255, 255, 0.04);
-    border-radius: 7px;
+    border-radius: 6px;
     background: #3b3c40;
     color: #eceef1;
+    font-size: 12px;
 }
 
 body.home-screen #modelMenu .model-search-input::placeholder {
@@ -3412,13 +3465,13 @@ body.home-screen #modelMenu .model-toggle-list {
 }
 
 body.home-screen #modelMenu .model-toggle-row {
-    padding: 2px 2px 4px 2px;
-    border-radius: 7px;
+    padding: 2px 6px;
+    border-radius: 6px;
     background: transparent;
 }
 
 body.home-screen #modelMenu .compact-auto-menu .model-toggle-row {
-    padding: 1px 1px 2px;
+    padding: 2px 6px;
 }
 
 body.home-screen #modelMenu .model-toggle-row:hover,
@@ -3431,25 +3484,26 @@ body.home-screen #modelMenu .model-toggle-copy {
 }
 
 body.home-screen #modelMenu .model-toggle-title {
-    font-size: 15px;
+    font-size: 12px;
     font-weight: 500;
     color: #f3f4f6;
+    line-height: 16px;
 }
 
 body.home-screen #modelMenu .model-toggle-desc {
-    max-width: 148px;
+    max-width: 142px;
     color: #b9bcc1;
-    font-size: 11.8px;
-    line-height: 1.18;
+    font-size: 11.5px;
+    line-height: 1.2;
 }
 
 body.home-screen #modelMenu .compact-auto-menu .model-toggle-desc {
-    max-width: 154px;
+    max-width: 142px;
 }
 
 body.home-screen #modelMenu .model-toggle-switch {
-    width: 31px;
-    height: 18px;
+    width: 24px;
+    height: 14px;
     background: rgba(255, 255, 255, 0.16);
 }
 
@@ -3458,28 +3512,28 @@ body.home-screen #modelMenu .model-toggle-switch.is-on {
 }
 
 body.home-screen #modelMenu .model-toggle-knob {
-    width: 14px;
-    height: 14px;
+    width: 10px;
+    height: 10px;
 }
 
 body.home-screen #modelMenu .model-toggle-switch.is-on .model-toggle-knob {
-    transform: translateX(13px);
+    transform: translateX(10px);
 }
 
 body.home-screen #modelMenu .model-menu-divider {
-    margin: 8px 0 6px;
+    margin: 4px 0 2px;
     background: rgba(255, 255, 255, 0.08);
 }
 
 body.home-screen #modelMenu .model-options-list {
     padding: 0;
     gap: 1px;
-    max-height: 196px;
+    max-height: 164px;
 }
 
 body.home-screen #modelMenu .dropdown-option.model-option {
-    padding: 8px 2px 8px 4px;
-    border-radius: 7px;
+    padding: 2px 4px 2px 6px;
+    border-radius: 6px;
     background: transparent;
 }
 
@@ -3489,6 +3543,7 @@ body.home-screen #modelMenu .dropdown-option.model-option.active {
 
 body.home-screen #modelMenu .model-option-name {
     color: #f2f3f5;
+    font-size: 12px;
 }
 
 body.home-screen #modeMenu .dropdown-title {
@@ -3823,19 +3878,19 @@ body:not(.home-screen) #modelMenu {
     left: 0;
     right: auto;
     min-width: 0;
-    width: min(228px, var(--app-stage-inline-room));
-    max-width: min(228px, var(--app-stage-inline-room));
-    max-height: min(456px, calc(var(--app-stage-height) - 80px));
+    width: min(184px, var(--app-stage-inline-room));
+    max-width: min(184px, var(--app-stage-inline-room));
+    max-height: min(276px, calc(var(--app-stage-height) - 80px));
     padding: 0;
     background: #47474a;
     border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 8px;
+    border-radius: 6px;
     box-shadow: 0 14px 28px rgba(0, 0, 0, 0.42);
 }
 
 body:not(.home-screen) #modelMenu.auto-compact-menu {
-    width: min(228px, var(--app-stage-inline-room));
-    max-width: min(228px, var(--app-stage-inline-room));
+    width: min(184px, var(--app-stage-inline-room));
+    max-width: min(184px, var(--app-stage-inline-room));
 }
 
 body:not(.home-screen) .mode-dropdown-option {
@@ -3907,28 +3962,29 @@ body:not(.home-screen) .mode-dropdown-option.active .mode-dropdown-check {
 
 body:not(.home-screen) #modelMenu .model-menu-panel {
     min-width: 0;
-    padding: 6px 8px 8px;
+    padding: 2px;
 }
 
 body:not(.home-screen) #modelMenu.auto-compact-menu .model-menu-panel {
-    padding: 6px 8px 8px;
+    padding: 2px;
 }
 
 body:not(.home-screen) #modelMenu .model-search-wrap {
-    padding: 0 0 8px;
+    padding: 0 2px 2px;
 }
 
 body:not(.home-screen) #modelMenu.auto-compact-menu .model-search-wrap {
-    padding: 0 0 8px;
+    padding: 0 2px 2px;
 }
 
 body:not(.home-screen) #modelMenu .model-search-input {
-    height: 31px;
-    padding: 0 10px;
+    height: 24px;
+    padding: 0 8px;
     border-color: rgba(255, 255, 255, 0.04);
-    border-radius: 7px;
+    border-radius: 6px;
     background: #3b3c40;
     color: #eceef1;
+    font-size: 12px;
 }
 
 body:not(.home-screen) #modelMenu .model-search-input::placeholder {
@@ -3945,8 +4001,8 @@ body:not(.home-screen) #modelMenu .model-toggle-list {
 }
 
 body:not(.home-screen) #modelMenu .model-toggle-row {
-    padding: 2px 2px 4px 2px;
-    border-radius: 7px;
+    padding: 2px 6px;
+    border-radius: 6px;
     background: transparent;
 }
 
@@ -3960,21 +4016,22 @@ body:not(.home-screen) #modelMenu .model-toggle-copy {
 }
 
 body:not(.home-screen) #modelMenu .model-toggle-title {
-    font-size: 15px;
+    font-size: 12px;
     font-weight: 500;
     color: #f3f4f6;
+    line-height: 16px;
 }
 
 body:not(.home-screen) #modelMenu .model-toggle-desc {
-    max-width: 148px;
+    max-width: 142px;
     color: #b9bcc1;
-    font-size: 11.8px;
-    line-height: 1.18;
+    font-size: 11.5px;
+    line-height: 1.2;
 }
 
 body:not(.home-screen) #modelMenu .model-toggle-switch {
-    width: 31px;
-    height: 18px;
+    width: 24px;
+    height: 14px;
     background: rgba(255, 255, 255, 0.16);
 }
 
@@ -3983,28 +4040,28 @@ body:not(.home-screen) #modelMenu .model-toggle-switch.is-on {
 }
 
 body:not(.home-screen) #modelMenu .model-toggle-knob {
-    width: 14px;
-    height: 14px;
+    width: 10px;
+    height: 10px;
 }
 
 body:not(.home-screen) #modelMenu .model-toggle-switch.is-on .model-toggle-knob {
-    transform: translateX(13px);
+    transform: translateX(10px);
 }
 
 body:not(.home-screen) #modelMenu .model-menu-divider {
-    margin: 8px 0 6px;
+    margin: 4px 0 2px;
     background: rgba(255, 255, 255, 0.08);
 }
 
 body:not(.home-screen) #modelMenu .model-options-list {
     padding: 0;
     gap: 1px;
-    max-height: min(232px, 34vh);
+    max-height: min(164px, 32vh);
 }
 
 body:not(.home-screen) #modelMenu .dropdown-option.model-option {
-    padding: 8px 2px 8px 4px;
-    border-radius: 7px;
+    padding: 2px 4px 2px 6px;
+    border-radius: 6px;
     background: transparent;
 }
 
@@ -4014,22 +4071,24 @@ body:not(.home-screen) #modelMenu .dropdown-option.model-option.active {
 
 body:not(.home-screen) #modelMenu .model-option-name {
     color: #f2f3f5;
-    font-size: 12.8px;
+    font-size: 12px;
 }
 
 body:not(.home-screen) #modelMenu .model-option-icon {
+    width: 10px;
+    height: 10px;
     color: rgba(201, 204, 209, 0.64);
 }
 
 body:not(.home-screen) #modelMenu .model-option-check {
     min-width: 10px;
-    font-size: 12px;
+    font-size: 11px;
     color: rgba(244, 245, 247, 0.92);
 }
 
 body:not(.home-screen) #modelMenu .model-footer-row {
-    padding: 7px 4px 3px 4px;
-    border-radius: 7px;
+    padding: 2px 4px 2px 6px;
+    border-radius: 6px;
     cursor: pointer;
 }
 
@@ -4038,12 +4097,12 @@ body:not(.home-screen) #modelMenu .model-footer-row:hover {
 }
 
 body:not(.home-screen) #modelMenu .model-footer-label {
-    font-size: 12.8px;
+    font-size: 12px;
     color: #c7c9ce;
 }
 
 body:not(.home-screen) #modelMenu .model-footer-chevron {
-    font-size: 15px;
+    font-size: 11px;
     color: #bbbfc5;
 }
 
@@ -4057,8 +4116,8 @@ body:not(.home-screen) #modelMenu.auto-compact-menu .model-toggle-list {
 }
 
 body:not(.home-screen) #modelMenu.auto-compact-menu .model-toggle-row {
-    padding: 1px 1px 2px;
-    border-radius: 7px;
+    padding: 2px 6px;
+    border-radius: 6px;
     background: transparent;
 }
 
@@ -4072,21 +4131,22 @@ body:not(.home-screen) #modelMenu.auto-compact-menu .model-toggle-copy {
 }
 
 body:not(.home-screen) #modelMenu.auto-compact-menu .model-toggle-title {
-    font-size: 15px;
+    font-size: 12px;
     font-weight: 500;
     color: #f3f4f6;
+    line-height: 16px;
 }
 
 body:not(.home-screen) #modelMenu.auto-compact-menu .model-toggle-desc {
-    max-width: 154px;
+    max-width: 142px;
     color: #b9bcc1;
-    font-size: 11.8px;
-    line-height: 1.18;
+    font-size: 11.5px;
+    line-height: 1.2;
 }
 
 body:not(.home-screen) #modelMenu.auto-compact-menu .model-toggle-switch {
-    width: 31px;
-    height: 18px;
+    width: 24px;
+    height: 14px;
     background: rgba(255, 255, 255, 0.16);
 }
 
@@ -4095,12 +4155,12 @@ body:not(.home-screen) #modelMenu.auto-compact-menu .model-toggle-switch.is-on {
 }
 
 body:not(.home-screen) #modelMenu.auto-compact-menu .model-toggle-knob {
-    width: 14px;
-    height: 14px;
+    width: 10px;
+    height: 10px;
 }
 
 body:not(.home-screen) #modelMenu.auto-compact-menu .model-toggle-switch.is-on .model-toggle-knob {
-    transform: translateX(13px);
+    transform: translateX(10px);
 }
 
 body:not(.home-screen) .toolbar-spacer {
