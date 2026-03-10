@@ -297,13 +297,14 @@ async function selectChat(cdp, chatTitle, traceId = null) {
     return finalResult;
 }
 
-// Close a specific chat tab by middle-clicking it (standard VS Code tab close)
+// Close a specific chat tab
 async function closeTab(cdp, chatTitle, traceId = null) {
     const targetTitle = String(chatTitle || '').trim();
     if (!targetTitle) return { error: 'Chat title required' };
     logTraceStep(traceId, 'closeTab.request', { targetTitle });
 
-    const result = await evaluateCursor(cdp, `
+    // Step 1: Find the tab and try to click its native close button
+    const findResult = await evaluateCursor(cdp, `
         const desiredTitle = ${JSON.stringify(targetTitle)};
         const normalizeTitle = (value) => String(value || '').replace(/[\u2026.]+$/g, '').trim().toLowerCase();
         const hasExplicitTruncation = (value) => /(?:\u2026|\.{3})\s*$/u.test(String(value || '').trim());
@@ -345,28 +346,84 @@ async function closeTab(cdp, chatTitle, traceId = null) {
             };
         }
 
-        // Middle-click to close the tab (standard VS Code behavior)
-        const el = target.element;
-        for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
-            try {
-                el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, button: 1 }));
-            } catch (e) { /* ignore */ }
-        }
-        try {
-            el.dispatchEvent(new MouseEvent('auxclick', { bubbles: true, cancelable: true, view: window, button: 1 }));
-        } catch (e) { /* ignore */ }
+        // Try to find and click native close button inside the tab
+        const closeBtn = target.element.querySelector(
+            '.codicon-close, .codicon-panel-close, [aria-label*="Close" i], [title*="Close" i], .action-label.close, .tab-close'
+        );
 
+        if (closeBtn) {
+            __cr.click(closeBtn);
+            return {
+                success: true,
+                method: 'native_close_button',
+                title: target.title,
+                wasActive: target.active
+            };
+        }
+
+        // Fallback: return coordinates for CDP-level mouse event
+        const rect = target.element.getBoundingClientRect();
         return {
-            success: true,
+            success: false,
+            reason: 'no_close_button',
             title: target.title,
-            wasActive: target.active
+            wasActive: target.active,
+            target: {
+                x: rect.left + (rect.width / 2),
+                y: rect.top + (rect.height / 2),
+                width: rect.width,
+                height: rect.height
+            }
         };
     `, {
         accept: (value) => value && typeof value === 'object'
     });
 
-    logTraceStep(traceId, 'closeTab.complete', summarizeActionResultForLog(result));
-    return result;
+    if (findResult?.success) {
+        logTraceStep(traceId, 'closeTab.nativeClose', summarizeActionResultForLog(findResult));
+        await new Promise(resolve => setTimeout(resolve, 300));
+        return findResult;
+    }
+
+    // Step 2: If no native close button found, use CDP Input.dispatchMouseEvent for middle-click
+    if (findResult?.target) {
+        logTraceStep(traceId, 'closeTab.cdpMiddleClick', { target: findResult.target });
+        const { x, y } = findResult.target;
+
+        try {
+            // CDP-level middle click (button=1) - this works in Electron unlike dispatched events
+            await cdp.call('Input.dispatchMouseEvent', {
+                type: 'mousePressed',
+                x: Math.round(x),
+                y: Math.round(y),
+                button: 'middle',
+                clickCount: 1
+            });
+            await new Promise(resolve => setTimeout(resolve, 50));
+            await cdp.call('Input.dispatchMouseEvent', {
+                type: 'mouseReleased',
+                x: Math.round(x),
+                y: Math.round(y),
+                button: 'middle',
+                clickCount: 1
+            });
+
+            await new Promise(resolve => setTimeout(resolve, 300));
+            const result = {
+                success: true,
+                method: 'cdp_middle_click',
+                title: findResult.title,
+                wasActive: findResult.wasActive
+            };
+            logTraceStep(traceId, 'closeTab.complete', summarizeActionResultForLog(result));
+            return result;
+        } catch (e) {
+            logTraceStep(traceId, 'closeTab.cdpMiddleClickError', { error: e.message });
+        }
+    }
+
+    logTraceStep(traceId, 'closeTab.failed', summarizeActionResultForLog(findResult));
+    return findResult || { error: 'Failed to close tab' };
 }
 
 // Close History Panel (Escape)
