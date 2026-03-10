@@ -4228,3 +4228,153 @@ body:not(.home-screen) .input-section {
     right: 0;
     bottom: 0;
 }
+
+body.has-chat-tabs:not(.home-screen),
+body.has-chat-tabs:not(.home-screen) button,
+body.has-chat-tabs:not(.home-screen) input,
+body.has-chat-tabs:not(.home-screen) textarea {
+    font-family: "Segoe UI Variable", "Segoe WPC", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+body.has-chat-tabs:not(.home-screen) .header {
+    gap: 6px;
+    padding: 4px 8px 4px;
+}
+
+body.has-chat-tabs:not(.home-screen) .header-left {
+    gap: 2px;
+}
+
+body.has-chat-tabs:not(.home-screen) .header-summary {
+    display: none !important;
+}
+
+body.has-chat-tabs:not(.home-screen) .header-chat-tabs {
+    display: block !important;
+}
+
+body.has-chat-tabs:not(.home-screen) .header-chat-tabs .snapshot-chat-tabs-track {
+    gap: 1px;
+}
+
+body.has-chat-tabs:not(.home-screen) .header-chat-tabs .snapshot-chat-tab {
+    flex: 0 1 auto;
+    min-width: 54px;
+    max-width: 182px;
+    height: 28px;
+    padding: 0 10px;
+    border: 1px solid transparent;
+    border-bottom-color: transparent;
+    border-radius: 6px 6px 0 0;
+    background: transparent;
+    color: #a7abb2;
+    box-shadow: none;
+}
+
+body.has-chat-tabs:not(.home-screen) .header-chat-tabs .snapshot-chat-tab.active {
+    background: #2a2c31;
+    border-color: rgba(255, 255, 255, 0.08);
+    border-bottom-color: transparent;
+    color: #f2f3f5;
+    box-shadow: none;
+}
+
+body.has-chat-tabs:not(.home-screen) .header-chat-tabs .snapshot-chat-tab-label {
+    font-size: 12px;
+    line-height: 27px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+}
+
+body.has-chat-tabs:not(.home-screen) .header-controls {
+    gap: 5px;
+}
+
+body.has-chat-tabs:not(.home-screen) .header-icon-btn,
+body.has-chat-tabs:not(.home-screen) .refresh-btn,
+body.has-chat-tabs:not(.home-screen) .settings-btn {
+    width: 16px;
+    height: 16px;
+    min-width: 16px;
+    color: #d5d8de;
+}
+
+body.has-chat-tabs:not(.home-screen) .header-icon-btn:hover,
+body.has-chat-tabs:not(.home-screen) .refresh-btn:hover,
+body.has-chat-tabs:not(.home-screen) .settings-btn:hover {
+    background: transparent;
+    border-color: transparent;
+    color: #ffffff;
+}
+
+body.has-chat-tabs:not(.home-screen) #historyQuickBtn svg,
+body.has-chat-tabs:not(.home-screen) #settingsBtn svg {
+    width: 13px;
+    height: 13px;
+}
+
+body.has-chat-tabs:not(.home-screen) #refreshBtn::before,
+body.has-chat-tabs:not(.home-screen) #fullscreenBtn::before {
+    font-size: 16px;
+}
+
+body.has-chat-tabs:not(.home-screen) .chat-container {
+    padding: 0;
+}
+
+body.has-chat-tabs:not(.home-screen) .chat-content {
+    padding: 0 0 114px;
+}
+
+body.has-chat-tabs:not(.home-screen) .input-section {
+    padding: 0 10px 10px;
+}
+
+body.has-chat-tabs:not(.home-screen) .input-box {
+    background: #3a3b40;
+    border-color: rgba(255, 255, 255, 0.05);
+    border-radius: 12px;
+}
+
+body.has-chat-tabs:not(.home-screen) .input-box textarea {
+    min-height: 40px;
+    padding: 11px 12px 5px;
+    font-size: 13px;
+    line-height: 1.35;
+}
+
+body.has-chat-tabs:not(.home-screen) .input-toolbar {
+    gap: 6px;
+    padding: 0 10px 9px;
+}
+
+body.has-chat-tabs:not(.home-screen) .toolbar-chip {
+    min-height: 24px;
+    padding: 0 9px;
+    font-size: 11.8px;
+}
+
+body.has-chat-tabs:not(.home-screen) .toolbar-icon-btn {
+    width: 20px;
+    height: 20px;
+    min-width: 20px;
+}
+
+body.has-chat-tabs:not(.home-screen) #attachBtn svg {
+    display: none;
+}
+
+body.has-chat-tabs:not(.home-screen) #attachBtn::before {
+    content: '';
+    display: block;
+    width: 13px;
+    height: 13px;
+    background: center / contain no-repeat url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23979aa1' stroke-width='1.35' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='1.75' y='2.25' width='12.5' height='10' rx='1.8'/%3E%3Ccircle cx='5.35' cy='5.85' r='1.15'/%3E%3Cpath d='M3.5 10.85 6.55 8.2l2.1 1.9 1.8-1.55 2.05 2.3'/%3E%3C/svg%3E");
+}
+
+body.has-chat-tabs:not(.home-screen) .toolbar-send-btn,
+body.has-chat-tabs:not(.home-screen) .toolbar-stop-btn {
+    width: 18px;
+    height: 18px;
+    min-width: 18px;
+}

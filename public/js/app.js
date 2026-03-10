@@ -80,6 +80,8 @@ const HOME_COMPOSER_PLACEHOLDER = 'Add a follow-up';
 const DEFAULT_APP_TITLE = appBrandTitle?.textContent || 'Cursor Remote';
 const DEFAULT_NEW_CHAT_LABEL = newChatLabel?.textContent || 'New Chat';
 const DEFAULT_RESTART_CURSOR_LABEL = restartCursorCdpBtn?.querySelector('.settings-option-label')?.textContent || 'Restart Cursor';
+const SNAPSHOT_REVALIDATE_INTERVAL = 4000;
+const SNAPSHOT_STATE_CHANGE_RELOAD_DELAYS = [150, 900];
 
 function setTextContent(element, value) {
     if (element) element.textContent = value;
@@ -87,6 +89,10 @@ function setTextContent(element, value) {
 
 function normalizeChatTitle(title) {
     return typeof title === 'string' ? title.trim() : '';
+}
+
+function hasExplicitChatTitleTruncation(title) {
+    return /(?:\u2026|\.{3})\s*$/.test(String(title || '').trim());
 }
 
 function normalizeChatTitleMatchKey(title) {
@@ -100,7 +106,17 @@ function chatTitlesMatch(left, right) {
     const a = normalizeChatTitleMatchKey(left);
     const b = normalizeChatTitleMatchKey(right);
     if (!a || !b) return false;
-    return a === b || a.includes(b) || b.includes(a);
+    if (a === b) return true;
+
+    if (hasExplicitChatTitleTruncation(left) && b.startsWith(a) && b.length > a.length) {
+        return true;
+    }
+
+    if (hasExplicitChatTitleTruncation(right) && a.startsWith(b) && a.length > b.length) {
+        return true;
+    }
+
+    return false;
 }
 
 function getTransportLabel() {
@@ -182,10 +198,29 @@ function getSnapshotTabScore(tab, activeTitle = '') {
     let score = title.length;
     if (tab?.active) score += 1000;
     if (activeTitle) {
-        if (chatTitlesMatch(title, activeTitle)) score += 120;
-        if (title.toLowerCase() === activeTitle.toLowerCase()) score += 120;
+        if (title.toLowerCase() === activeTitle.toLowerCase()) {
+            score += 240;
+        } else if (chatTitlesMatch(title, activeTitle)) {
+            score += 120;
+        }
     }
     return score;
+}
+
+function getPreferredSnapshotActiveTabIndex(tabs = [], activeTitle = '') {
+    const resolvedActiveTitle = normalizeChatTitle(activeTitle);
+    let preferredIndex = -1;
+
+    tabs.forEach((tab, index) => {
+        const isCandidate = !!tab?.active || (!!resolvedActiveTitle && chatTitlesMatch(tab?.title, resolvedActiveTitle));
+        if (!isCandidate) return;
+
+        if (preferredIndex === -1 || getSnapshotTabScore(tab, resolvedActiveTitle) > getSnapshotTabScore(tabs[preferredIndex], resolvedActiveTitle)) {
+            preferredIndex = index;
+        }
+    });
+
+    return preferredIndex;
 }
 
 function normalizeSnapshotChatTabs(tabs = [], activeTitle = '') {
@@ -211,24 +246,18 @@ function normalizeSnapshotChatTabs(tabs = [], activeTitle = '') {
     });
 
     if (!resolvedActiveTitle) {
-        return exactDeduped;
+        const preferredIndex = getPreferredSnapshotActiveTabIndex(exactDeduped, resolvedActiveTitle);
+        return exactDeduped.map((tab, index) => ({
+            ...tab,
+            active: index === preferredIndex
+        }));
     }
 
-    const activeLikeIndexes = exactDeduped
-        .map((tab, index) => (chatTitlesMatch(tab.title, resolvedActiveTitle) ? index : -1))
-        .filter((index) => index >= 0);
-
-    if (activeLikeIndexes.length <= 1) {
-        return exactDeduped;
-    }
-
-    const keepIndex = activeLikeIndexes.reduce((bestIndex, currentIndex) =>
-        getSnapshotTabScore(exactDeduped[currentIndex], resolvedActiveTitle) > getSnapshotTabScore(exactDeduped[bestIndex], resolvedActiveTitle)
-            ? currentIndex
-            : bestIndex
-    );
-
-    return exactDeduped.filter((tab, index) => !activeLikeIndexes.includes(index) || index === keepIndex);
+    const preferredIndex = getPreferredSnapshotActiveTabIndex(exactDeduped, resolvedActiveTitle);
+    return exactDeduped.map((tab, index) => ({
+        ...tab,
+        active: index === preferredIndex
+    }));
 }
 
 function updateCursorShellStatus({ connected, running, snapshotReady }) {
@@ -383,13 +412,17 @@ let hasSnapshotLoaded = false;
 let availableModes = [];
 let availableModels = [];
 let lastModelDropdownState = null;
+let modelDropdownMutationPromise = null;
 let activeChatTitle = '';
 let lastChatTabs = [];
 let restartCursorPending = false;
 let selectChatRequestId = 0;
 let appStateRequestInFlight = null;
+let queuedForcedAppStateRefresh = null;
+let queuedForcedAppStateRefreshPromise = null;
 let appStateRequestId = 0;
 let latestAppliedAppStateRequestId = 0;
+let snapshotRequestInFlight = null;
 
 function setHasChatTabs(hasTabs) {
     document.body.classList.toggle('has-chat-tabs', !!hasTabs);
@@ -408,6 +441,35 @@ function renderHeaderChatTabs(tabs = [], activeTitle = '') {
     headerChatTabs.innerHTML = tabsHtml;
     headerChatTabs.setAttribute('aria-hidden', tabsHtml ? 'false' : 'true');
     setHasChatTabs(!!tabsHtml);
+}
+
+function getChatTabsSignature(tabs = [], activeTitle = '') {
+    return JSON.stringify({
+        activeTitle: normalizeChatTitle(activeTitle),
+        tabs: normalizeSnapshotChatTabs(tabs, activeTitle).map((tab) => ({
+            title: normalizeChatTitle(tab.title),
+            active: !!tab.active
+        }))
+    });
+}
+
+function queueSnapshotReload({ delays = [0], allowWhileScrolling = false } = {}) {
+    const normalizedDelays = Array.isArray(delays) ? delays : [delays];
+    normalizedDelays.forEach((delay) => {
+        window.setTimeout(() => {
+            if (document.visibilityState === 'hidden') return;
+            if (!allowWhileScrolling && (userIsScrolling || !autoRefreshEnabled)) return;
+
+            const shouldLoadSnapshot =
+                chatIsOpen ||
+                hasSnapshotLoaded ||
+                lastChatTabs.length > 0 ||
+                !!normalizeChatTitle(activeChatTitle);
+
+            if (!shouldLoadSnapshot) return;
+            loadSnapshot();
+        }, Math.max(0, Number(delay) || 0));
+    });
 }
 
 function setRestartCursorButtonState(isBusy) {
@@ -553,27 +615,10 @@ async function refreshOpenDropdowns({ modeChanged = false, modelChanged = false 
         })());
     }
 
-    if (modelChanged && modelMenu.classList.contains('show')) {
+    if (modelChanged && modelMenu.classList.contains('show') && !modelDropdownMutationPromise) {
         refreshTasks.push((async () => {
             try {
-                const data = await fetchDropdownOptions('model');
-                const hasStructuredModelMenu = !data.error && (
-                    !!data.searchPlaceholder ||
-                    !!data.footerLabel ||
-                    (Array.isArray(data.toggles) && data.toggles.length >= 2) ||
-                    (Array.isArray(data.options) && data.options.length >= 3)
-                );
-                const normalized = normalizeModelDropdownState(
-                    hasStructuredModelMenu
-                        ? data
-                        : getModelDropdownFallbackState({
-                            current: currentModel && currentModel !== 'Unknown' ? currentModel : modelText.textContent
-                        })
-                );
-
-                availableModels = normalized.options;
-                lastModelDropdownState = normalized;
-                buildModelDropdownMenu(modelMenu, normalized);
+                await syncModelDropdownState({ rebuildMenu: true, delays: [0] });
             } catch (error) {
                 console.error('[SYNC] Failed to refresh model dropdown', error);
             }
@@ -588,6 +633,8 @@ async function refreshOpenDropdowns({ modeChanged = false, modelChanged = false 
 function applyDesktopState(data = {}, { syncOpenDropdowns = true, loadSnapshotWhenMissing = true } = {}) {
     if (!data || typeof data !== 'object') return { modeChanged: false, modelChanged: false };
 
+    const previousActiveChatTitle = normalizeChatTitle(activeChatTitle);
+    const previousChatTabsSignature = getChatTabsSignature(lastChatTabs, previousActiveChatTitle);
     const nextMode = data.mode && data.mode !== 'Unknown'
         ? getModeDisplayLabel(data.mode)
         : currentMode;
@@ -651,12 +698,50 @@ function applyDesktopState(data = {}, { syncOpenDropdowns = true, loadSnapshotWh
         refreshOpenDropdowns({ modeChanged, modelChanged });
     }
 
+    const nextActiveChatTitle = normalizeChatTitle(activeChatTitle);
+    const nextChatTabsSignature = getChatTabsSignature(lastChatTabs, nextActiveChatTitle);
+    const chatViewChanged =
+        hasSnapshotLoaded &&
+        liveCursorView &&
+        (
+            previousActiveChatTitle !== nextActiveChatTitle ||
+            previousChatTabsSignature !== nextChatTabsSignature
+        );
+
+    if (chatViewChanged) {
+        queueSnapshotReload({
+            delays: SNAPSHOT_STATE_CHANGE_RELOAD_DELAYS,
+            allowWhileScrolling: true
+        });
+    }
+
     return { modeChanged, modelChanged };
 }
 
 async function fetchAppState({ force = false, applyOptions = {} } = {}) {
-    if (appStateRequestInFlight && !force) {
-        return appStateRequestInFlight;
+    if (appStateRequestInFlight) {
+        if (!force) {
+            return appStateRequestInFlight;
+        }
+
+        queuedForcedAppStateRefresh = {
+            force: true,
+            applyOptions: {
+                ...(queuedForcedAppStateRefresh?.applyOptions || {}),
+                ...applyOptions
+            }
+        };
+
+        if (!queuedForcedAppStateRefreshPromise) {
+            queuedForcedAppStateRefreshPromise = appStateRequestInFlight.finally(() => {
+                const nextRefresh = queuedForcedAppStateRefresh;
+                queuedForcedAppStateRefresh = null;
+                queuedForcedAppStateRefreshPromise = null;
+                return nextRefresh ? fetchAppState(nextRefresh) : null;
+            });
+        }
+
+        return queuedForcedAppStateRefreshPromise;
     }
 
     const requestId = ++appStateRequestId;
@@ -1150,7 +1235,7 @@ ${data.css || ''}
 ${snapshotRootScope} {
     background-color: transparent !important;
     color: var(--text-main) !important;
-    font-family: 'Inter', system-ui, sans-serif !important;
+    font-family: "Segoe UI Variable", "Segoe WPC", "Segoe UI", system-ui, sans-serif !important;
     position: relative !important;
     height: auto !important;
     width: 100% !important;
@@ -1463,7 +1548,7 @@ ${snapshotRootScope} .text-ide-text-color {
 }
 
 ${snapshotRootScope} [style*="max-width: 740px"] {
-    max-width: min(800px, 100%) !important;
+    max-width: min(740px, 100%) !important;
 }
 
 ${snapshotRootScope} .composer-message-blur,
@@ -1476,11 +1561,11 @@ ${snapshotRootScope} [data-message-role="tool"] {
 
 ${snapshotRootScope} [data-message-role="human"][style*="position: sticky"] {
     position: sticky !important;
-    top: 6px !important;
+    top: 0 !important;
     z-index: 25 !important;
     margin-left: 0 !important;
     max-width: none !important;
-    padding: 0 8px 8px !important;
+    padding: 0 0 10px !important;
 }
 
 ${snapshotRootScope} [data-message-role="human"][style*="position: sticky"] .composer-human-message-container {
@@ -1490,9 +1575,9 @@ ${snapshotRootScope} [data-message-role="human"][style*="position: sticky"] .com
 ${snapshotRootScope} [data-message-role="human"][style*="position: sticky"] .composer-human-message,
 ${snapshotRootScope} [data-message-role="human"][style*="position: sticky"] .human-message-with-todos-wrapper {
     width: 100% !important;
-    background: #33353a !important;
-    border: 1px solid rgba(255, 255, 255, 0.04) !important;
-    border-radius: 8px !important;
+    background: #3a3b40 !important;
+    border: 1px solid rgba(255, 255, 255, 0.05) !important;
+    border-radius: 10px !important;
     box-shadow: none !important;
 }
 
@@ -1500,29 +1585,31 @@ ${snapshotRootScope} .ui-step-group-header,
 ${snapshotRootScope} .ui-collapsible-header {
     display: inline-flex !important;
     align-items: center !important;
-    gap: 4px !important;
-    font-size: 13px !important;
-    line-height: 1.4 !important;
+    gap: 6px !important;
+    font-size: 12.6px !important;
+    line-height: 1.35 !important;
     letter-spacing: -0.01em !important;
 }
 
 ${snapshotRootScope} .ui-collapsible-header span:first-child {
-    color: rgba(255, 255, 255, 0.72) !important;
+    color: rgba(255, 255, 255, 0.64) !important;
+    font-weight: 500 !important;
 }
 
 ${snapshotRootScope} .ui-collapsible-header span:last-of-type,
 ${snapshotRootScope} .ui-collapsible-chevron,
 ${snapshotRootScope} .cursor-icon {
-    color: rgba(255, 255, 255, 0.48) !important;
-    opacity: 0.7 !important;
+    color: rgba(255, 255, 255, 0.4) !important;
+    opacity: 1 !important;
 }
 
 ${snapshotRootScope} [data-message-kind="assistant"] .markdown-root,
 ${snapshotRootScope} [data-message-kind="assistant"] .markdown-root p,
 ${snapshotRootScope} [data-message-kind="tool"] .markdown-root,
 ${snapshotRootScope} [data-message-kind="tool"] .markdown-root p {
-    font-size: 15px !important;
-    line-height: 1.65 !important;
+    font-family: "Segoe UI Variable", "Segoe WPC", "Segoe UI", system-ui, sans-serif !important;
+    font-size: 13.2px !important;
+    line-height: 1.55 !important;
     letter-spacing: -0.01em !important;
 }
 
@@ -1536,8 +1623,8 @@ ${snapshotRootScope} .composer-tool-former-message,
 ${snapshotRootScope} .composer-tool-call-container,
 ${snapshotRootScope} .composer-terminal-tool-call-block-container {
     background: transparent !important;
-    border: 1px solid rgba(255, 255, 255, 0.08) !important;
-    border-radius: 10px !important;
+    border: 1px solid rgba(255, 255, 255, 0.09) !important;
+    border-radius: 8px !important;
     box-shadow: none !important;
 }
 
@@ -1596,8 +1683,27 @@ ${snapshotRootScope} .composer-terminal-top-header-text,
 ${snapshotRootScope} .composer-terminal-top-header-description,
 ${snapshotRootScope} .composer-tool-former-message,
 ${snapshotRootScope} .composer-tool-call-container {
-    font-size: 13px !important;
-    line-height: 1.45 !important;
+    font-family: "Segoe UI Variable", "Segoe WPC", "Segoe UI", system-ui, sans-serif !important;
+    font-size: 12.8px !important;
+    line-height: 1.35 !important;
+}
+
+${snapshotRootScope} .composer-terminal-top-header-description {
+    color: rgba(255, 255, 255, 0.74) !important;
+}
+
+${snapshotRootScope} .composer-terminal-top-header-candidates {
+    color: rgba(255, 255, 255, 0.42) !important;
+}
+
+${snapshotRootScope} .composer-terminal-top-header-description,
+${snapshotRootScope} .composer-terminal-top-header-candidates,
+${snapshotRootScope} .composer-terminal-top-header-text > span {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    border-radius: 0 !important;
 }
 
 ${snapshotRootScope} .composer-tool-call-container.composer-terminal-compact-mode.composer-terminal-header-only,
@@ -1667,12 +1773,13 @@ ${snapshotRootScope} [data-message-role="human"] .composer-human-message {
 
 ${snapshotRootScope} [data-message-role="human"] .aislash-editor-input-readonly,
 ${snapshotRootScope} [data-message-role="human"] [data-lexical-editor="true"] {
-    font-size: 14px !important;
-    line-height: 1.55 !important;
+    font-family: "Segoe UI Variable", "Segoe WPC", "Segoe UI", system-ui, sans-serif !important;
+    font-size: 13.2px !important;
+    line-height: 1.45 !important;
 }
 
 ${snapshotRootScope} .composer-human-ai-pair-container {
-    gap: 12px !important;
+    gap: 10px !important;
 }
 
 ${snapshotRootScope} [style*="padding-inline: 9px"] {
@@ -1688,8 +1795,8 @@ ${snapshotRootScope} [aria-label="New Chat Section"] {
 ${snapshotRootScope} .composer-message-group,
 ${snapshotRootScope} [data-message-kind="assistant"],
 ${snapshotRootScope} [data-message-kind="tool"] {
-    padding-left: 8px !important;
-    padding-right: 8px !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
 }`;
         styleTag.textContent = darkModeOverrides;
     }
@@ -1740,41 +1847,56 @@ ${snapshotRootScope} [data-message-kind="tool"] {
 
 // --- Rendering (HTTP fallback - used for initial load and manual refresh) ---
 async function loadSnapshot() {
-    try {
-        // Add spin animation to refresh button
-        const icon = refreshBtn.querySelector('svg');
-        icon.classList.remove('spin-anim');
-        void icon.offsetWidth; // trigger reflow
-        icon.classList.add('spin-anim');
+    if (snapshotRequestInFlight) {
+        return snapshotRequestInFlight;
+    }
 
-        const response = await fetchWithAuth('/snapshot');
-        if (!response.ok) {
-            if (response.status === 503) {
-                const latestState = await fetchAppState({
-                    force: true,
-                    applyOptions: {
-                        loadSnapshotWhenMissing: false
+    const request = (async () => {
+        try {
+            // Add spin animation to refresh button
+            const icon = refreshBtn?.querySelector('svg');
+            if (icon) {
+                icon.classList.remove('spin-anim');
+                void icon.offsetWidth; // trigger reflow
+                icon.classList.add('spin-anim');
+            }
+
+            const response = await fetchWithAuth('/snapshot');
+            if (!response.ok) {
+                if (response.status === 503) {
+                    const latestState = await fetchAppState({
+                        force: true,
+                        applyOptions: {
+                            loadSnapshotWhenMissing: false
+                        }
+                    });
+                    if (hasLiveCursorView(latestState)) {
+                        return;
                     }
-                });
-                if (hasLiveCursorView(latestState)) {
+                    // No snapshot available - likely no chat open
+                    chatIsOpen = false;
+                    hasSnapshotLoaded = false;
+                    updateWorkspaceChrome({ snapshotReady: false });
+                    showEmptyState();
                     return;
                 }
-                // No snapshot available - likely no chat open
-                chatIsOpen = false;
-                hasSnapshotLoaded = false;
-                updateWorkspaceChrome({ snapshotReady: false });
-                showEmptyState();
-                return;
+                throw new Error('Failed to load');
             }
-            throw new Error('Failed to load');
+
+            const data = await response.json();
+            renderSnapshot(data);
+
+        } catch (err) {
+            console.error(err);
         }
+    })().finally(() => {
+        if (snapshotRequestInFlight === request) {
+            snapshotRequestInFlight = null;
+        }
+    });
 
-        const data = await response.json();
-        renderSnapshot(data);
-
-    } catch (err) {
-        console.error(err);
-    }
+    snapshotRequestInFlight = request;
+    return request;
 }
 
 // --- Mobile Code Block Copy Functionality ---
@@ -2599,8 +2721,69 @@ function buildDropdownMenu(menu, title, options, currentValue, descriptions = {}
 }
 
 function normalizeModelDropdownState(data = {}) {
+    const isLiveModelState = !!(data && typeof data === 'object' && !data.error && (
+        data.live === true ||
+        Array.isArray(data.toggles) ||
+        Array.isArray(data.items) ||
+        Array.isArray(data.options) ||
+        Object.prototype.hasOwnProperty.call(data, 'searchPlaceholder') ||
+        Object.prototype.hasOwnProperty.call(data, 'footerLabel') ||
+        Object.prototype.hasOwnProperty.call(data, 'autoAvailable') ||
+        Object.prototype.hasOwnProperty.call(data, 'compactAuto')
+    ));
     const fallback = getModelDropdownFallbackState(data);
     const current = data.current && data.current !== 'Unknown' ? data.current : fallback.current;
+
+    if (isLiveModelState) {
+        let toggles = (Array.isArray(data.toggles) ? data.toggles : [])
+            .map((toggle) => ({
+                key: String(toggle?.key || toggle?.label || '')
+                    .trim()
+                    .toLowerCase()
+                    .replace(/\s+/g, '-'),
+                label: String(toggle?.label || toggle?.key || '').trim(),
+                description: String(toggle?.description || '').trim(),
+                enabled: !!toggle?.enabled
+            }))
+            .filter((toggle) => toggle.key && toggle.label);
+
+        if (!toggles.length && (typeof data.autoAvailable === 'boolean' ? data.autoAvailable : /^auto$/i.test(current))) {
+            toggles = [{
+                key: 'auto',
+                label: String(data.autoLabel || 'Auto').trim(),
+                description: String(data.autoDescription || MODEL_FALLBACK_TOGGLES[0].description || '').trim(),
+                enabled: typeof data.autoEnabled === 'boolean' ? data.autoEnabled : /^auto$/i.test(current)
+            }];
+        }
+
+        let items = normalizeModelOptionItems(
+            Array.isArray(data.items) && data.items.length
+                ? data.items
+                : (Array.isArray(data.options) ? data.options : [])
+        ).filter((item) => item.value && !/^auto$/i.test(item.value));
+
+        if (!items.length && current && current !== 'Unknown' && !/^auto$/i.test(current)) {
+            items = normalizeModelOptionItems([{ value: current, icon: getModelOptionIcon(current) }])
+                .filter((item) => item.value && !/^auto$/i.test(item.value));
+        }
+
+        const options = items.map((item) => item.value);
+        const autoToggle = toggles.find((toggle) => toggle.key === 'auto') || null;
+
+        return {
+            current,
+            options,
+            items,
+            toggles,
+            searchPlaceholder: String(data.searchPlaceholder || '').trim(),
+            footerLabel: String(data.footerLabel || '').trim(),
+            compactAuto: typeof data.compactAuto === 'boolean'
+                ? data.compactAuto
+                : (/^auto$/i.test(current) && !!autoToggle && !options.length),
+            live: true
+        };
+    }
+
     const incomingToggles = Array.isArray(data.toggles) && data.toggles.length
         ? data.toggles
         : [];
@@ -2648,6 +2831,61 @@ function normalizeModelDropdownState(data = {}) {
         footerLabel: data.footerLabel || fallback.footerLabel || '',
         compactAuto: /^auto$/i.test(current)
     };
+}
+
+function applyNormalizedModelDropdownState(normalized, { rebuildMenu = false } = {}) {
+    if (!normalized || typeof normalized !== 'object') return null;
+
+    availableModels = Array.isArray(normalized.options) ? normalized.options : [];
+    lastModelDropdownState = normalized;
+
+    const nextModel = normalized.current && normalized.current !== 'Unknown'
+        ? normalized.current
+        : currentModel;
+
+    if (nextModel) {
+        currentModel = nextModel;
+        modelText.textContent = nextModel;
+        updateWorkspaceChrome({ model: nextModel });
+    }
+
+    if (rebuildMenu) {
+        buildModelDropdownMenu(modelMenu, normalized);
+    }
+
+    return normalized;
+}
+
+async function syncModelDropdownState({ rebuildMenu = modelMenu.classList.contains('show'), delays = [0] } = {}) {
+    if (modelDropdownMutationPromise) {
+        return lastModelDropdownState;
+    }
+
+    let lastError = null;
+
+    for (const delay of delays) {
+        if (delay > 0) {
+            await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+
+        if (modelDropdownMutationPromise) {
+            return lastModelDropdownState;
+        }
+
+        try {
+            const data = await fetchDropdownOptions('model');
+            const normalized = normalizeModelDropdownState(data);
+            return applyNormalizedModelDropdownState(normalized, { rebuildMenu });
+        } catch (error) {
+            lastError = error;
+        }
+    }
+
+    if (lastError) {
+        console.error('[SYNC] Failed to sync model dropdown', lastError);
+    }
+
+    return lastModelDropdownState;
 }
 
 function renderModelOptionsList(listEl, state, filterText = '') {
@@ -2866,38 +3104,12 @@ async function openModelDropdown() {
     toggleDropdown(modelMenu, modelBtn);
 
     try {
-        const data = await fetchDropdownOptions('model');
-        const hasStructuredModelMenu = !data.error && (
-            !!data.searchPlaceholder ||
-            !!data.footerLabel ||
-            (Array.isArray(data.toggles) && data.toggles.length >= 2) ||
-            (Array.isArray(data.options) && data.options.length >= 3)
-        );
-        const fallbackState = getModelDropdownFallbackState({
-            current: currentModel && currentModel !== 'Unknown' ? currentModel : modelText.textContent
-        });
-        const normalized = normalizeModelDropdownState(
-            hasStructuredModelMenu
-                ? data
-                : fallbackState
-        );
-
-        availableModels = normalized.options;
-        lastModelDropdownState = normalized;
-
-        if (hasStructuredModelMenu && normalized.current && normalized.current !== 'Unknown') {
-            currentModel = normalized.current;
-            modelText.textContent = normalized.current;
-        }
-
-        buildModelDropdownMenu(modelMenu, normalized);
+        await syncModelDropdownState({ rebuildMenu: true, delays: [0] });
     } catch (e) {
         const normalized = normalizeModelDropdownState(getModelDropdownFallbackState({
             current: currentModel && currentModel !== 'Unknown' ? currentModel : modelText.textContent
         }));
-        availableModels = normalized.options;
-        lastModelDropdownState = normalized;
-        buildModelDropdownMenu(modelMenu, normalized);
+        applyNormalizedModelDropdownState(normalized, { rebuildMenu: true });
     }
 }
 
@@ -2942,71 +3154,104 @@ modelBtn.addEventListener('click', openModelDropdown);
 async function applyModelSelection(model, prev = currentModel || modelText.textContent) {
     if (!model) return;
 
-    modelText.textContent = 'Setting...';
-    try {
-        const res = await fetchWithAuth('/set-model', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model })
-        });
-        const data = await res.json();
-        if (data.success) {
-            currentModel = data.currentModel || model;
-            modelText.textContent = currentModel;
-            updateWorkspaceChrome({ model: currentModel });
-            if (lastModelDropdownState) {
-                lastModelDropdownState.current = currentModel;
-                lastModelDropdownState.toggles = (lastModelDropdownState.toggles || []).map((toggle) =>
-                    toggle.key === 'auto'
-                        ? { ...toggle, enabled: /^auto$/i.test(currentModel) }
-                        : toggle
-                );
-            }
-            return true;
-        }
-
-        alert('Error: ' + (data.error || 'Unknown'));
-    } catch (e) {
-        console.error('Model selection failed:', e);
+    if (modelDropdownMutationPromise) {
+        return modelDropdownMutationPromise;
     }
 
-    modelText.textContent = currentModel || prev;
-    return false;
+    modelDropdownMutationPromise = (async () => {
+        modelText.textContent = 'Setting...';
+        try {
+            const res = await fetchWithAuth('/set-model', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model })
+            });
+            const data = await res.json();
+            if (data.success) {
+                currentModel = data.currentModel || model;
+                modelText.textContent = currentModel;
+                updateWorkspaceChrome({ model: currentModel });
+                if (lastModelDropdownState) {
+                    lastModelDropdownState.current = currentModel;
+                    lastModelDropdownState.toggles = (lastModelDropdownState.toggles || []).map((toggle) =>
+                        toggle.key === 'auto'
+                            ? { ...toggle, enabled: /^auto$/i.test(currentModel) }
+                            : toggle
+                    );
+                }
+                setTimeout(() => {
+                    syncModelDropdownState({ rebuildMenu: modelMenu.classList.contains('show'), delays: [0, 180, 420] });
+                }, 0);
+                return true;
+            }
+
+            alert('Error: ' + (data.error || 'Unknown'));
+        } catch (e) {
+            console.error('Model selection failed:', e);
+        }
+
+        modelText.textContent = currentModel || prev;
+        return false;
+    })();
+
+    try {
+        return await modelDropdownMutationPromise;
+    } finally {
+        modelDropdownMutationPromise = null;
+    }
 }
 
 async function applyModelToggle(toggleKey, enabled) {
     if (!toggleKey) return false;
 
-    try {
-        const res = await fetchWithAuth('/set-model-toggle', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ key: toggleKey, enabled })
-        });
-        const data = await res.json();
-        if (data.success) {
-            const normalized = normalizeModelDropdownState({
-                current: data.currentModel || currentModel,
-                options: lastModelDropdownState?.options || MODEL_FALLBACK_OPTIONS.map(item => item.name),
-                toggles: Array.isArray(data.toggles) && data.toggles.length ? data.toggles : lastModelDropdownState?.toggles,
-                footerLabel: lastModelDropdownState?.footerLabel || ''
-            });
-            currentModel = normalized.current || currentModel;
-            modelText.textContent = currentModel;
-            updateWorkspaceChrome({ model: currentModel });
-            availableModels = normalized.options;
-            lastModelDropdownState = normalized;
-            buildModelDropdownMenu(modelMenu, normalized);
-            return true;
-        }
-    } catch (e) {
-        console.error('Model toggle failed:', e);
+    if (modelDropdownMutationPromise) {
+        return modelDropdownMutationPromise;
     }
 
-    return false;
+    modelDropdownMutationPromise = (async () => {
+        try {
+            const res = await fetchWithAuth('/set-model-toggle', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key: toggleKey, enabled })
+            });
+            const data = await res.json();
+            if (data.success) {
+                const normalized = normalizeModelDropdownState({
+                    live: true,
+                    current: data.currentModel || currentModel,
+                    options: Array.isArray(data.options) ? data.options : [],
+                    toggles: Array.isArray(data.toggles) ? data.toggles : [],
+                    searchPlaceholder: data.searchPlaceholder || '',
+                    footerLabel: data.footerLabel || '',
+                    compactAuto: /^auto$/i.test(data.currentModel || currentModel) && (!Array.isArray(data.options) || !data.options.length)
+                });
+                applyNormalizedModelDropdownState(normalized, { rebuildMenu: true });
+                setTimeout(() => {
+                    syncModelDropdownState({ rebuildMenu: modelMenu.classList.contains('show'), delays: [120, 320, 700] });
+                }, 0);
+                return true;
+            }
+        } catch (e) {
+            console.error('Model toggle failed:', e);
+        }
+
+        return false;
+    })();
+
+    try {
+        return await modelDropdownMutationPromise;
+    } finally {
+        modelDropdownMutationPromise = null;
+    }
 }
 
 modelMenu.addEventListener('click', async (e) => {
+    if (modelDropdownMutationPromise) {
+        e.preventDefault();
+        return;
+    }
+
     const toggleRow = e.target.closest('.model-toggle-row');
     if (toggleRow) {
         e.preventDefault();
@@ -3175,6 +3420,9 @@ connectWebSocket();
 // Sync state initially and every 5 seconds to keep phone in sync with desktop changes
 fetchAppState();
 setInterval(fetchAppState, 5000);
+setInterval(() => {
+    queueSnapshotReload({ delays: [0] });
+}, SNAPSHOT_REVALIDATE_INTERVAL);
 
 // Check chat status initially and periodically
 checkChatStatus();
