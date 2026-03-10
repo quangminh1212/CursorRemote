@@ -12,7 +12,7 @@ import { captureSnapshot } from './src/server/actions/snapshot.js';
 import { injectMessage, injectFile } from './src/server/actions/inject.js';
 import { setMode, setModel, setModelToggle, triggerModelMenuAction, getDropdownOptions, stopGeneration } from './src/server/actions/mode-model.js';
 import { clickElement, remoteScroll } from './src/server/actions/ui-actions.js';
-import { startNewChat, getChatHistory, selectChat, closeHistory, hasChatOpen } from './src/server/actions/chat.js';
+import { startNewChat, getChatHistory, selectChat, closeTab, closeHistory, hasChatOpen } from './src/server/actions/chat.js';
 import { getAppState, hashString, isLocalRequest } from './src/server/app-state.js';
 import {
     createPollingState, initCDP, startPolling, ensureHttpsCertificates,
@@ -96,6 +96,7 @@ async function main() {
             __dirname,
             clickElement,
             closeHistory,
+            closeTab,
             ensureHttpsCertificates: () => ensureHttpsCertificates({ RUNTIME_ROOT, IS_EMBEDDED_RUNTIME, __dirname }),
             getAppState,
             getAppStateForApi: (cdp, opts) => getAppStateForApi(state, cdp, opts),

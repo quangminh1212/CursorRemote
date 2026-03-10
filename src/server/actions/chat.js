@@ -297,6 +297,78 @@ async function selectChat(cdp, chatTitle, traceId = null) {
     return finalResult;
 }
 
+// Close a specific chat tab by middle-clicking it (standard VS Code tab close)
+async function closeTab(cdp, chatTitle, traceId = null) {
+    const targetTitle = String(chatTitle || '').trim();
+    if (!targetTitle) return { error: 'Chat title required' };
+    logTraceStep(traceId, 'closeTab.request', { targetTitle });
+
+    const result = await evaluateCursor(cdp, `
+        const desiredTitle = ${JSON.stringify(targetTitle)};
+        const normalizeTitle = (value) => String(value || '').replace(/[\u2026.]+$/g, '').trim().toLowerCase();
+        const hasExplicitTruncation = (value) => /(?:\u2026|\.{3})\s*$/u.test(String(value || '').trim());
+        const titlesMatch = (left, right) => {
+            const a = normalizeTitle(left);
+            const b = normalizeTitle(right);
+            if (!a || !b) return false;
+            if (a === b) return true;
+            if (hasExplicitTruncation(left) && b.startsWith(a) && b.length > a.length) return true;
+            if (hasExplicitTruncation(right) && a.startsWith(b) && a.length > b.length) return true;
+            return false;
+        };
+        const container = __cr.findChatTabsContainer();
+        if (!container) return { success: false, reason: 'chat_tabs_not_found' };
+
+        const tabs = __cr.getChatTabElements(container)
+            .map((element) => ({
+                element,
+                title: String(element.getAttribute('aria-label') || __cr.textOf(element) || '').trim(),
+                active: __cr.isTabActive(element)
+            }))
+            .filter((tab) => tab.title && !/^more actions(?:\\.\\.\\.)?$/i.test(tab.title));
+
+        const target = tabs
+            .filter((tab) => titlesMatch(tab.title, desiredTitle))
+            .sort((a, b) => {
+                const desiredLower = normalizeTitle(desiredTitle);
+                const aExact = normalizeTitle(a.title) === desiredLower ? 1 : 0;
+                const bExact = normalizeTitle(b.title) === desiredLower ? 1 : 0;
+                if (bExact !== aExact) return bExact - aExact;
+                return b.title.length - a.title.length;
+            })[0];
+
+        if (!target) {
+            return {
+                success: false,
+                reason: 'chat_tab_not_found',
+                available: tabs.map((tab) => tab.title)
+            };
+        }
+
+        // Middle-click to close the tab (standard VS Code behavior)
+        const el = target.element;
+        for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
+            try {
+                el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, button: 1 }));
+            } catch (e) { /* ignore */ }
+        }
+        try {
+            el.dispatchEvent(new MouseEvent('auxclick', { bubbles: true, cancelable: true, view: window, button: 1 }));
+        } catch (e) { /* ignore */ }
+
+        return {
+            success: true,
+            title: target.title,
+            wasActive: target.active
+        };
+    `, {
+        accept: (value) => value && typeof value === 'object'
+    });
+
+    logTraceStep(traceId, 'closeTab.complete', summarizeActionResultForLog(result));
+    return result;
+}
+
 // Close History Panel (Escape)
 async function closeHistory(cdp) {
     const EXP = `(async () => {
@@ -339,4 +411,4 @@ async function hasChatOpen(cdp) {
     });
 }
 
-export { startNewChat, getChatHistory, selectChat, closeHistory, hasChatOpen };
+export { startNewChat, getChatHistory, selectChat, closeTab, closeHistory, hasChatOpen };

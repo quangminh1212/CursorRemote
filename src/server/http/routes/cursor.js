@@ -92,6 +92,7 @@ export function registerCursorRoutes(app, {
     getCdpConnection,
     clickElement,
     closeHistory,
+    closeTab,
     getAppState,
     getAppStateForApi,
     getChatHistory,
@@ -386,6 +387,24 @@ export function registerCursorRoutes(app, {
         const cdpConnection = getConnectedCdp(getCdpConnection, res);
         if (!cdpConnection) return;
         const result = await closeHistory(cdpConnection);
+        res.json(result);
+    });
+
+    app.post('/close-tab', async (req, res) => {
+        const { title } = req.body;
+        const trace = createActionTrace(req, 'close-tab', { title });
+        if (!title) {
+            trace.finish({ error: 'Chat title required' }, { httpStatus: 400 });
+            return res.status(400).json({ error: 'Chat title required' });
+        }
+
+        const cdpConnection = getConnectedCdp(getCdpConnection, res);
+        if (!cdpConnection) {
+            trace.finish({ error: 'CDP disconnected' }, { httpStatus: 503 });
+            return;
+        }
+        const result = await closeTab(cdpConnection, title, trace.traceId);
+        trace.finish(result);
         res.json(result);
     });
 
