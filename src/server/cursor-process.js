@@ -2,7 +2,7 @@ import fs from 'fs';
 import os from 'os';
 import { join, dirname } from 'path';
 import { execSync, spawn } from 'child_process';
-import { findcursorExecutable, getcursorStoragePath, getTargetWorkspace, sleep } from './system-utils.js';
+import { findcursorExecutable, findcursorCliCommand, getcursorStoragePath, getTargetWorkspace, sleep } from './system-utils.js';
 import { discoverCDP } from './cdp-connection.js';
 
 // Module-level state for launch deduplication
@@ -139,6 +139,7 @@ export async function launchcursorWithCDP({
             return { attempted: false, reason: 'missing-executable' };
         }
 
+        const cursorCli = findcursorCliCommand();
         const targetWorkspace = getTargetWorkspace();
 
         // Step 1: Ensure argv.json has remote-debugging-port
@@ -165,52 +166,100 @@ export async function launchcursorWithCDP({
         let launched = false;
         let ready = false;
 
-        // Strategy A: Direct spawn with CLI flag
-        try {
-            const child = spawn(executable, [
-                targetWorkspace,
-                `--remote-debugging-port=${PRIMARY_CDP_PORT}`
-            ], {
-                detached: true,
-                stdio: 'ignore',
-                windowsHide: !FORCE_VISIBLE
-            });
+        // Strategy A0: Prefer Cursor CLI command (more reliable on recent Windows builds)
+        if (cursorCli && !launched) {
+            try {
+                if (process.platform === 'win32') {
+                    const child = spawn('cmd', [
+                        '/c',
+                        cursorCli,
+                        targetWorkspace,
+                        `--remote-debugging-port=${PRIMARY_CDP_PORT}`
+                    ], {
+                        detached: true,
+                        stdio: 'ignore',
+                        windowsHide: !FORCE_VISIBLE
+                    });
+                    child.unref();
+                } else {
+                    const child = spawn(cursorCli, [
+                        targetWorkspace,
+                        `--remote-debugging-port=${PRIMARY_CDP_PORT}`
+                    ], {
+                        detached: true,
+                        stdio: 'ignore'
+                    });
+                    child.unref();
+                }
 
-            const quickExitCode = await Promise.race([
-                new Promise(resolve => child.on('exit', resolve)),
-                new Promise(resolve => setTimeout(() => resolve(null), 3000))
-            ]);
-
-            if (quickExitCode === null) {
-                child.unref();
-                launched = true;
-                console.log('Cursor launched with --remote-debugging-port CLI flag');
-            } else if (quickExitCode === 9 || quickExitCode === 1) {
-                console.log(`Cursor rejected --remote-debugging-port CLI flag (exit ${quickExitCode}), using argv.json fallback`);
-                ready = await waitForCDP(10000);
+                console.log(`Cursor launch command issued via CLI: ${cursorCli}`);
+                ready = await waitForCDP(12000);
                 if (ready) {
                     launched = true;
-                    console.log('Cursor exposed CDP after launcher exit; skipping argv.json fallback');
+                    console.log('Cursor CDP became ready after CLI launch');
                 }
-            } else if (quickExitCode === 0) {
-                console.log('Cursor delegated to existing instance (exit 0)');
-                launched = true;
+            } catch (error) {
+                console.warn(`Strategy A0 (cursor CLI launch) failed: ${error.message}`);
             }
-        } catch (error) {
-            console.warn(`Strategy A (direct spawn) failed: ${error.message}`);
+        }
+
+        // Strategy A1: Direct spawn with CLI flag
+        if (!launched) {
+            try {
+                const child = spawn(executable, [
+                    targetWorkspace,
+                    `--remote-debugging-port=${PRIMARY_CDP_PORT}`
+                ], {
+                    detached: true,
+                    stdio: 'ignore',
+                    windowsHide: !FORCE_VISIBLE
+                });
+
+                const quickExitCode = await Promise.race([
+                    new Promise(resolve => child.on('exit', resolve)),
+                    new Promise(resolve => setTimeout(() => resolve(null), 3000))
+                ]);
+
+                if (quickExitCode === null) {
+                    child.unref();
+                    launched = true;
+                    console.log('Cursor launched with --remote-debugging-port CLI flag');
+                } else if (quickExitCode === 9 || quickExitCode === 1) {
+                    console.log(`Cursor rejected --remote-debugging-port CLI flag (exit ${quickExitCode}), using argv.json fallback`);
+                    ready = await waitForCDP(10000);
+                    if (ready) {
+                        launched = true;
+                        console.log('Cursor exposed CDP after launcher exit; skipping argv.json fallback');
+                    }
+                } else if (quickExitCode === 0) {
+                    console.log('Cursor delegated to existing instance (exit 0)');
+                    launched = true;
+                }
+            } catch (error) {
+                console.warn(`Strategy A1 (direct spawn) failed: ${error.message}`);
+            }
         }
 
         // Strategy B: Launch via cmd start
         if (!launched) {
             try {
-                const child = spawn('cmd', ['/c', 'start', '', executable, targetWorkspace], {
-                    detached: true,
-                    stdio: 'ignore',
-                    windowsHide: true
-                });
+                const launchTarget = cursorCli || executable;
+                const launchArgs = process.platform === 'win32'
+                    ? ['/c', 'start', '', launchTarget, targetWorkspace, `--remote-debugging-port=${PRIMARY_CDP_PORT}`]
+                    : [targetWorkspace];
+                const child = process.platform === 'win32'
+                    ? spawn('cmd', launchArgs, {
+                        detached: true,
+                        stdio: 'ignore',
+                        windowsHide: true
+                    })
+                    : spawn(executable, launchArgs, {
+                        detached: true,
+                        stdio: 'ignore'
+                    });
                 child.unref();
                 launched = true;
-                console.log('Cursor launched via cmd start (argv.json approach)');
+                console.log(`Cursor launched via fallback command (${process.platform === 'win32' ? 'cmd start' : 'direct spawn'})`);
             } catch (error) {
                 console.warn(`Strategy B (cmd start) failed: ${error.message}`);
             }

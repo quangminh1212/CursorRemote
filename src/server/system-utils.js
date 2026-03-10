@@ -184,4 +184,26 @@ function findcursorExecutable() {
         || (process.platform === 'win32' ? findCommandOnPath('Cursor') : null);
 }
 
-export { killPortProcess, getLocalIP, getJson, sleep, getcursorStoragePath, findRecentcursorWorkspace, getTargetWorkspace, findCommandOnPath, findcursorExecutable };
+function findcursorCliCommand() {
+    if (process.platform === 'win32') {
+        return findCommandOnPath('cursor.cmd')
+            || findCommandOnPath('cursor')
+            || findCommandOnPath('Cursor');
+    }
+
+    return findCommandOnPath('cursor')
+        || findCommandOnPath('Cursor');
+}
+
+export {
+    killPortProcess,
+    getLocalIP,
+    getJson,
+    sleep,
+    getcursorStoragePath,
+    findRecentcursorWorkspace,
+    getTargetWorkspace,
+    findCommandOnPath,
+    findcursorExecutable,
+    findcursorCliCommand
+};
