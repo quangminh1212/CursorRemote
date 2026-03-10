@@ -79,6 +79,7 @@ export async function initCDP(state, { ports } = {}) {
 export async function startPolling(state, wss, { POLL_INTERVAL = 500, ports } = {}) {
     let lastErrorLog = 0;
     let isConnecting = false;
+    const activePollIntervalMs = Math.max(160, Math.floor(POLL_INTERVAL / 2));
 
     const broadcast = (payload) => {
         const message = JSON.stringify(payload);
@@ -87,6 +88,11 @@ export async function startPolling(state, wss, { POLL_INTERVAL = 500, ports } = 
                 try { client.send(message); } catch (e) { /* ignore dead sockets */ }
             }
         });
+    };
+
+    const resolveNextPollInterval = () => {
+        const hasActiveClient = Array.from(wss.clients).some(client => client.readyState === WebSocket.OPEN);
+        return hasActiveClient ? activePollIntervalMs : POLL_INTERVAL;
     };
 
     const poll = async () => {
@@ -178,7 +184,7 @@ export async function startPolling(state, wss, { POLL_INTERVAL = 500, ports } = 
             console.error('Poll error:', err.message);
         }
 
-        setTimeout(poll, POLL_INTERVAL);
+        setTimeout(poll, resolveNextPollInterval());
     };
 
     poll();
