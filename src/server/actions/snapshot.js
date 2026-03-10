@@ -20,7 +20,33 @@ async function captureSnapshot(cdp) {
         }
 
         const clone = panel.cloneNode(true);
+        const preservedAlerts = [];
+        const preservedAlertKeys = new Set();
+        const alertSelector = '.announcement-modal, [role="alert"], [aria-live="assertive"]';
+
+        clone.querySelectorAll('.composer-input-blur-wrapper, .ai-input-full-input-box').forEach(container => {
+            container.querySelectorAll(alertSelector).forEach(alertNode => {
+                const alertText = String(alertNode.innerText || alertNode.textContent || '')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+                if (!alertText || preservedAlertKeys.has(alertText)) return;
+                preservedAlertKeys.add(alertText);
+
+                const alertClone = alertNode.cloneNode(true);
+                alertClone.classList.add('cr-preserved-alert');
+                preservedAlerts.push(alertClone);
+            });
+        });
+
         clone.querySelectorAll('.composite.title, .title-actions, .simple-find-part-wrapper, .composer-input-blur-wrapper, .ai-input-full-input-box, .compact-agent-history-react-menu-content, .ui-menu__content, .context-view').forEach(el => el.remove());
+
+        if (preservedAlerts.length) {
+            const mountPoint = clone.querySelector('.pane-body') || clone;
+            const alertContainer = document.createElement('div');
+            alertContainer.className = 'cr-preserved-alerts';
+            preservedAlerts.forEach(alertNode => alertContainer.appendChild(alertNode));
+            mountPoint.appendChild(alertContainer);
+        }
 
         const scrollTarget = __cr.findPanelScrollRoot() || panel;
         const bodyStyles = getComputedStyle(document.body);
