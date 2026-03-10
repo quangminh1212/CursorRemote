@@ -30,5 +30,15 @@
     "license": "GPL-3.0-only",
     "engines": {
         "node": ">=16.0.0"
-    }
+    },
+    "main": "generate_ssl.js",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/quangminh1212/CursorRemote.git"
+    },
+    "keywords": [],
+    "bugs": {
+        "url": "https://github.com/quangminh1212/CursorRemote/issues"
+    },
+    "homepage": "https://github.com/quangminh1212/CursorRemote#readme"
 }
