@@ -91,6 +91,25 @@ attachBtn.addEventListener('click', () => {
     fileInput.click();
 });
 
+function normalizeUploadPreviewGlyphs(root) {
+    if (!root) return;
+
+    root.querySelectorAll('.file-preview-check').forEach((node) => {
+        node.innerHTML = '&#10003;';
+        node.setAttribute('aria-hidden', 'true');
+    });
+
+    root.querySelectorAll('.file-preview-remove').forEach((button) => {
+        button.innerHTML = '&times;';
+        button.type = 'button';
+    });
+
+    root.querySelectorAll('.file-preview-item.error span[style*="color:#ef4444"]').forEach((node) => {
+        node.innerHTML = '&#10005;';
+        node.setAttribute('aria-hidden', 'true');
+    });
+}
+
 fileInput.addEventListener('change', async () => {
     const files = Array.from(fileInput.files);
     if (!files.length) return;
@@ -176,6 +195,8 @@ fileInput.addEventListener('change', async () => {
             console.error('[UPLOAD] Error:', e);
         }
     }
+
+    normalizeUploadPreviewGlyphs(previewBar);
 
     // Reset file input so the same file can be re-selected
     fileInput.value = '';

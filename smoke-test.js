@@ -46,8 +46,9 @@ async function run() {
     const passed = results.filter((r) => r.pass).length;
     const total = results.length;
     console.log('Smoke test:', passed === total ? 'PASS' : 'FAIL', `(${passed}/${total})`);
-    results.forEach((r) => console.log('  ', r.pass ? '✓' : '✗', r.name, r.status != null ? r.status : r.error || ''));
+    results.forEach((r) => console.log('  ', r.pass ? '[OK]' : '[X]', r.name, r.status != null ? r.status : r.error || ''));
     process.exit(passed === total ? 0 : 1);
 }
 
 run();
+
