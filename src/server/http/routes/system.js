@@ -90,6 +90,45 @@ function getConnectedCdp(getCdpConnection, res) {
     return cdpConnection;
 }
 
+function summarizeLogText(value, maxLength = 120) {
+    const normalized = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!normalized) return '';
+    return normalized.length > maxLength
+        ? `${normalized.slice(0, Math.max(0, maxLength - 1))}…`
+        : normalized;
+}
+
+function createSystemTrace(req, action, payload = {}) {
+    const traceId = `${action}-${req.requestId || 'na'}-${Date.now().toString(36)}`;
+    const startedAt = Date.now();
+    console.log(`[SYSTEM ${traceId}] start`, {
+        requestId: req.requestId || undefined,
+        action,
+        route: req.requestTarget || req.originalUrl || req.url,
+        payload
+    });
+    return {
+        finish(result = {}, extra = {}) {
+            console.log(`[SYSTEM ${traceId}] finish`, {
+                requestId: req.requestId || undefined,
+                action,
+                durationMs: Date.now() - startedAt,
+                result,
+                ...extra
+            });
+        },
+        fail(error, extra = {}) {
+            console.error(`[SYSTEM ${traceId}] fail`, {
+                requestId: req.requestId || undefined,
+                action,
+                durationMs: Date.now() - startedAt,
+                error: error?.message || String(error),
+                ...extra
+            });
+        }
+    };
+}
+
 export function registerSystemRoutes(app, {
     APP_PASSWORD,
     AUTH_COOKIE_NAME,
@@ -109,22 +148,31 @@ export function registerSystemRoutes(app, {
 }) {
     app.post('/login', (req, res) => {
         const { password } = req.body;
+        const trace = createSystemTrace(req, 'login', {
+            passwordProvided: typeof password === 'string' && password.length > 0
+        });
         if (password === APP_PASSWORD) {
             setSignedAuthCookie(res, { authCookieName: AUTH_COOKIE_NAME, authToken });
+            trace.finish({ success: true });
             res.json({ success: true });
         } else {
+            trace.finish({ success: false, error: 'Invalid password' }, { httpStatus: 401 });
             res.status(401).json({ success: false, error: 'Invalid password' });
         }
     });
 
     app.post('/logout', (req, res) => {
+        const trace = createSystemTrace(req, 'logout');
         res.clearCookie(AUTH_COOKIE_NAME);
+        trace.finish({ success: true });
         res.json({ success: true });
     });
 
     app.get('/snapshot', async (req, res) => {
+        const trace = createSystemTrace(req, 'snapshot');
         const cdpConnection = getCdpConnection();
         if (!cdpConnection) {
+            trace.finish({ error: 'No live snapshot available' }, { httpStatus: 503, cdpConnected: false });
             return res.status(503).json({ error: 'No live snapshot available' });
         }
 
@@ -139,19 +187,37 @@ export function registerSystemRoutes(app, {
                 );
 
                 if (!hasLiveCursorView) {
+                    trace.finish({ error: 'No live chat available' }, {
+                        httpStatus: 503,
+                        appState: {
+                            mode: summarizeLogText(appState?.mode || '', 32) || undefined,
+                            model: summarizeLogText(appState?.model || '', 48) || undefined,
+                            hasChat: !!appState?.hasChat,
+                            editorFound: !!appState?.editorFound
+                        }
+                    });
                     return res.status(503).json({ error: 'No live chat available' });
                 }
             } catch (error) {
+                trace.fail(error, { httpStatus: 503, stage: 'live_snapshot_validation' });
                 return res.status(503).json({ error: 'Live snapshot validation failed' });
             }
         }
 
         const snapshot = getSnapshot();
         if (!snapshot) {
+            trace.finish({ error: 'No snapshot available yet' }, { httpStatus: 503 });
             return res.status(503).json({ error: 'No snapshot available yet' });
         }
 
         res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        trace.finish({
+            success: true,
+            activeChatTitle: summarizeLogText(snapshot.activeChatTitle || '', 96) || undefined,
+            chatTabCount: Array.isArray(snapshot.chatTabs) ? snapshot.chatTabs.length : 0,
+            htmlSize: snapshot.stats?.htmlSize || snapshot.html?.length || 0,
+            hash: snapshot.hash || undefined
+        });
         res.json(snapshot);
     });
 
@@ -207,6 +273,7 @@ export function registerSystemRoutes(app, {
     });
 
     app.post('/generate-ssl', async (req, res) => {
+        const trace = createSystemTrace(req, 'generate-ssl');
         try {
             const { execSync } = await import('child_process');
             execSync('node generate_ssl.js', {
@@ -222,7 +289,9 @@ export function registerSystemRoutes(app, {
                 success: true,
                 message: 'SSL certificates generated! Restart the server to enable HTTPS.'
             });
+            trace.finish({ success: true });
         } catch (error) {
+            trace.fail(error, { httpStatus: 500 });
             res.status(500).json({
                 success: false,
                 error: error.message

@@ -11,12 +11,89 @@ function getConnectedCdp(getCdpConnection, res, errorMessage = 'CDP disconnected
     return cdpConnection;
 }
 
+function summarizeLogText(value, maxLength = 120) {
+    const normalized = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!normalized) return '';
+    return normalized.length > maxLength
+        ? `${normalized.slice(0, Math.max(0, maxLength - 1))}…`
+        : normalized;
+}
+
+function summarizePayload(payload = {}) {
+    const entries = Object.entries(payload)
+        .filter(([, value]) => value !== undefined)
+        .slice(0, 8)
+        .map(([key, value]) => {
+            if (typeof value === 'string') return [key, summarizeLogText(value, 120)];
+            if (Array.isArray(value)) return [key, { count: value.length, sample: value.slice(0, 4).map((item) => summarizeLogText(item, 48)) }];
+            if (value && typeof value === 'object') return [key, '[object]'];
+            return [key, value];
+        });
+    return Object.fromEntries(entries);
+}
+
+function summarizeResult(result) {
+    if (!result || typeof result !== 'object') return result;
+    return {
+        success: result.success ?? result.ok ?? undefined,
+        error: summarizeLogText(result.error || result.reason || '', 160) || undefined,
+        method: summarizeLogText(result.method || '', 48) || undefined,
+        mode: summarizeLogText(result.mode || '', 40) || undefined,
+        model: summarizeLogText(result.model || result.current || '', 56) || undefined,
+        currentMode: summarizeLogText(result.currentMode || '', 40) || undefined,
+        currentModel: summarizeLogText(result.currentModel || '', 56) || undefined,
+        title: summarizeLogText(result.title || '', 96) || undefined,
+        activeChatTitle: summarizeLogText(result.activeChatTitle || '', 96) || undefined,
+        optionCount: Array.isArray(result.options) ? result.options.length : Array.isArray(result.available) ? result.available.length : undefined,
+        toggleCount: Array.isArray(result.toggles) ? result.toggles.length : undefined,
+        chatCount: Array.isArray(result.chats) ? result.chats.length : undefined,
+        chatTabCount: Array.isArray(result.chatTabs) ? result.chatTabs.length : undefined,
+        hasChat: typeof result.hasChat === 'boolean' ? result.hasChat : undefined,
+        hasMessages: typeof result.hasMessages === 'boolean' ? result.hasMessages : undefined,
+        editorFound: typeof result.editorFound === 'boolean' ? result.editorFound : undefined,
+        status: summarizeLogText(result.status || '', 40) || undefined
+    };
+}
+
+function createActionTrace(req, action, payload = {}) {
+    const startedAt = Date.now();
+    const traceId = `${action}-${req.requestId || 'na'}-${Date.now().toString(36)}`;
+    console.log(`[ACTION ${traceId}] start`, {
+        requestId: req.requestId || undefined,
+        action,
+        route: req.requestTarget || req.originalUrl || req.url,
+        payload: summarizePayload(payload)
+    });
+    return {
+        traceId,
+        finish(result, extra = {}) {
+            console.log(`[ACTION ${traceId}] finish`, {
+                requestId: req.requestId || undefined,
+                action,
+                durationMs: Date.now() - startedAt,
+                result: summarizeResult(result),
+                ...extra
+            });
+        },
+        fail(error, extra = {}) {
+            console.error(`[ACTION ${traceId}] fail`, {
+                requestId: req.requestId || undefined,
+                action,
+                durationMs: Date.now() - startedAt,
+                error: error?.message || String(error),
+                ...extra
+            });
+        }
+    };
+}
+
 export function registerCursorRoutes(app, {
     RUNTIME_ROOT,
     getCdpConnection,
     clickElement,
     closeHistory,
     getAppState,
+    getAppStateForApi,
     getChatHistory,
     getDropdownOptions,
     hasChatOpen,
@@ -33,25 +110,40 @@ export function registerCursorRoutes(app, {
 }) {
     app.post('/set-mode', async (req, res) => {
         const { mode } = req.body;
+        const trace = createActionTrace(req, 'set-mode', { mode });
         const cdpConnection = getConnectedCdp(getCdpConnection, res);
-        if (!cdpConnection) return;
-        const result = await setMode(cdpConnection, mode);
+        if (!cdpConnection) {
+            trace.finish({ error: 'CDP disconnected' }, { httpStatus: 503 });
+            return;
+        }
+        const result = await setMode(cdpConnection, mode, trace.traceId);
+        trace.finish(result);
         res.json(result);
     });
 
     app.post('/set-model', async (req, res) => {
         const { model } = req.body;
+        const trace = createActionTrace(req, 'set-model', { model });
         const cdpConnection = getConnectedCdp(getCdpConnection, res);
-        if (!cdpConnection) return;
-        const result = await setModel(cdpConnection, model);
+        if (!cdpConnection) {
+            trace.finish({ error: 'CDP disconnected' }, { httpStatus: 503 });
+            return;
+        }
+        const result = await setModel(cdpConnection, model, trace.traceId);
+        trace.finish(result);
         res.json(result);
     });
 
     app.post('/set-model-toggle', async (req, res) => {
         const { key, enabled } = req.body || {};
+        const trace = createActionTrace(req, 'set-model-toggle', { key, enabled });
         const cdpConnection = getConnectedCdp(getCdpConnection, res);
-        if (!cdpConnection) return;
-        const result = await setModelToggle(cdpConnection, key, enabled);
+        if (!cdpConnection) {
+            trace.finish({ error: 'CDP disconnected' }, { httpStatus: 503 });
+            return;
+        }
+        const result = await setModelToggle(cdpConnection, key, enabled, trace.traceId);
+        trace.finish(result);
         res.json(result);
     });
 
@@ -64,20 +156,30 @@ export function registerCursorRoutes(app, {
 
     app.post('/send', async (req, res) => {
         const { message } = req.body;
+        const trace = createActionTrace(req, 'send', {
+            messageLength: typeof message === 'string' ? message.length : 0,
+            preview: summarizeLogText(message, 120)
+        });
 
         if (!message) {
+            trace.finish({ error: 'Message required' }, { httpStatus: 400 });
             return res.status(400).json({ error: 'Message required' });
         }
 
         const cdpConnection = getConnectedCdp(getCdpConnection, res, 'CDP not connected');
-        if (!cdpConnection) return;
+        if (!cdpConnection) {
+            trace.finish({ error: 'CDP not connected' }, { httpStatus: 503 });
+            return;
+        }
 
-        const result = await injectMessage(cdpConnection, message);
-        res.json({
+        const result = await injectMessage(cdpConnection, message, trace.traceId);
+        const response = {
             success: result.ok !== false,
             method: result.method || 'attempted',
             details: result
-        });
+        };
+        trace.finish(response);
+        res.json(response);
     });
 
     const uploadsDir = join(RUNTIME_ROOT, 'uploads');
@@ -97,26 +199,39 @@ export function registerCursorRoutes(app, {
     });
 
     app.post('/upload', upload.single('file'), async (req, res) => {
+        const trace = createActionTrace(req, 'upload', {
+            fileName: req.file?.originalname,
+            fileSize: req.file?.size
+        });
         if (!req.file) {
+            trace.finish({ error: 'No file provided' }, { httpStatus: 400 });
             return res.status(400).json({ error: 'No file provided' });
         }
 
         const cdpConnection = getConnectedCdp(getCdpConnection, res, 'CDP not connected');
-        if (!cdpConnection) return;
+        if (!cdpConnection) {
+            trace.finish({ error: 'CDP not connected' }, { httpStatus: 503 });
+            return;
+        }
 
         const filePath = req.file.path.replace(/\\/g, '/');
         console.log(`File uploaded: ${req.file.originalname} (${req.file.size} bytes) -> ${filePath}`);
 
         try {
             const result = await injectFile(cdpConnection, filePath);
-            res.json({
+            const response = {
                 success: result.success !== false,
                 file: req.file.originalname,
                 size: req.file.size,
                 details: result
-            });
+            };
+            trace.finish(response);
+            res.json(response);
         } catch (error) {
             console.error('File inject error:', error);
+            trace.fail(error, {
+                file: req.file.originalname
+            });
             res.json({
                 success: false,
                 file: req.file.originalname,
@@ -142,30 +257,45 @@ export function registerCursorRoutes(app, {
     });
 
     app.get('/app-state', async (req, res) => {
+        const trace = createActionTrace(req, 'app-state');
         const cdpConnection = getCdpConnection();
         if (!cdpConnection) {
-            return res.json({ mode: 'Unknown', model: 'Unknown', isRunning: false, hasChat: false, hasMessages: false, editorFound: false, activeChatTitle: '', chatTabs: [] });
+            const fallbackState = { mode: 'Unknown', model: 'Unknown', isRunning: false, hasChat: false, hasMessages: false, editorFound: false, activeChatTitle: '', chatTabs: [] };
+            trace.finish(fallbackState, { cdpConnected: false });
+            return res.json(fallbackState);
         }
 
-        const result = await getAppState(cdpConnection);
-        res.json(result);
+        const appStateResult = getAppStateForApi
+            ? await getAppStateForApi(cdpConnection)
+            : { state: await getAppState(cdpConnection), source: 'live' };
+        trace.finish(appStateResult.state, { cdpConnected: true, source: appStateResult.source });
+        res.json(appStateResult.state);
     });
 
     app.get('/dropdown-options', async (req, res) => {
         const kind = req.query.kind === 'model' ? 'model' : 'mode';
+        const trace = createActionTrace(req, 'dropdown-options', { kind });
         const cdpConnection = getCdpConnection();
         if (!cdpConnection) {
-            return res.json({ error: 'CDP disconnected', kind, options: [] });
+            const fallbackResult = { error: 'CDP disconnected', kind, options: [] };
+            trace.finish(fallbackResult, { cdpConnected: false });
+            return res.json(fallbackResult);
         }
 
-        const result = await getDropdownOptions(cdpConnection, kind);
+        const result = await getDropdownOptions(cdpConnection, kind, trace.traceId);
+        trace.finish(result, { cdpConnected: true });
         res.json(result);
     });
 
     app.post('/new-chat', async (req, res) => {
+        const trace = createActionTrace(req, 'new-chat');
         const cdpConnection = getConnectedCdp(getCdpConnection, res);
-        if (!cdpConnection) return;
-        const result = await startNewChat(cdpConnection);
+        if (!cdpConnection) {
+            trace.finish({ error: 'CDP disconnected' }, { httpStatus: 503 });
+            return;
+        }
+        const result = await startNewChat(cdpConnection, trace.traceId);
+        trace.finish(result);
         res.json(result);
     });
 
@@ -201,24 +331,34 @@ export function registerCursorRoutes(app, {
     });
 
     app.get('/chat-history', async (req, res) => {
+        const trace = createActionTrace(req, 'chat-history');
         const cdpConnection = getCdpConnection();
         if (!cdpConnection) {
-            return res.json({ error: 'CDP disconnected', chats: [] });
+            const fallbackResult = { error: 'CDP disconnected', chats: [] };
+            trace.finish(fallbackResult, { cdpConnected: false });
+            return res.json(fallbackResult);
         }
 
-        const result = await getChatHistory(cdpConnection);
+        const result = await getChatHistory(cdpConnection, trace.traceId);
+        trace.finish(result, { cdpConnected: true });
         res.json(result);
     });
 
     app.post('/select-chat', async (req, res) => {
         const { title } = req.body;
+        const trace = createActionTrace(req, 'select-chat', { title });
         if (!title) {
+            trace.finish({ error: 'Chat title required' }, { httpStatus: 400 });
             return res.status(400).json({ error: 'Chat title required' });
         }
 
         const cdpConnection = getConnectedCdp(getCdpConnection, res);
-        if (!cdpConnection) return;
-        const result = await selectChat(cdpConnection, title);
+        if (!cdpConnection) {
+            trace.finish({ error: 'CDP disconnected' }, { httpStatus: 503 });
+            return;
+        }
+        const result = await selectChat(cdpConnection, title, trace.traceId);
+        trace.finish(result);
         res.json(result);
     });
 

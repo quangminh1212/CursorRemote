@@ -3,6 +3,14 @@ import cookieParser from 'cookie-parser';
 const AUTH_COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const PUBLIC_PATHS = new Set(['/login', '/login.html', '/favicon.ico', '/logo.png']);
 
+function summarizeLogText(value, maxLength = 120) {
+    const normalized = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!normalized) return '';
+    return normalized.length > maxLength
+        ? `${normalized.slice(0, Math.max(0, maxLength - 1))}…`
+        : normalized;
+}
+
 export function setSignedAuthCookie(res, { authCookieName, authToken }) {
     res.cookie(authCookieName, authToken, {
         httpOnly: true,
@@ -22,15 +30,27 @@ export function registerRequestLogging(app, { sanitizeLogUrl }) {
         const clientIp = typeof forwardedFor === 'string'
             ? forwardedFor.split(',')[0].trim()
             : req.socket?.remoteAddress || req.ip || 'unknown';
+        const userAgent = summarizeLogText(req.headers['user-agent'] || '', 160);
+        const contentLength = Number(req.headers['content-length'] || 0) || 0;
 
-        console.log(`[REQ ${requestId}] -> ${req.method} ${requestTarget} from ${clientIp}`);
+        req.requestId = requestId;
+        req.requestStartedAt = startedAt;
+        req.requestTarget = requestTarget;
+        res.locals.requestId = requestId;
+
+        console.log(`[REQ ${requestId}] -> ${req.method} ${requestTarget} from ${clientIp}`, {
+            userAgent: userAgent || undefined,
+            contentLength: contentLength || undefined
+        });
 
         let responseLogged = false;
         const logResponse = (eventName) => {
             if (responseLogged) return;
             responseLogged = true;
             const durationMs = Date.now() - startedAt;
-            console.log(`[REQ ${requestId}] <- ${res.statusCode} ${req.method} ${requestTarget} ${durationMs}ms (${eventName})`);
+            console.log(`[REQ ${requestId}] <- ${res.statusCode} ${req.method} ${requestTarget} ${durationMs}ms (${eventName})`, {
+                contentType: summarizeLogText(res.getHeader('content-type') || '', 96) || undefined
+            });
         };
 
         res.once('finish', () => logResponse('finish'));
@@ -85,7 +105,16 @@ export function bindAuthenticatedWebSocketServer(wss, {
     isLocalRequest,
     sessionSecret
 }) {
+    let wsConnectionCounter = 0;
+
     wss.on('connection', (ws, req) => {
+        const clientId = ++wsConnectionCounter;
+        const connectedAt = Date.now();
+        const forwardedFor = req.headers['x-forwarded-for'];
+        const clientIp = typeof forwardedFor === 'string'
+            ? forwardedFor.split(',')[0].trim()
+            : req.socket?.remoteAddress || req.ip || 'unknown';
+        const userAgent = summarizeLogText(req.headers['user-agent'] || '', 160);
         const rawCookies = req.headers.cookie || '';
         const parsedCookies = {};
 
@@ -113,16 +142,37 @@ export function bindAuthenticatedWebSocketServer(wss, {
         }
 
         if (!isAuthenticated) {
-            console.log('Unauthorized WebSocket connection attempt');
+            console.log(`[WS ${clientId}] Unauthorized connection attempt`, {
+                clientIp,
+                userAgent: userAgent || undefined
+            });
             ws.send(JSON.stringify({ type: 'error', message: 'Unauthorized' }));
             setTimeout(() => ws.close(), 100);
             return;
         }
 
-        console.log('Client connected (Authenticated)');
+        console.log(`[WS ${clientId}] Client connected`, {
+            authenticated: true,
+            clientIp,
+            userAgent: userAgent || undefined
+        });
 
-        ws.on('close', () => {
-            console.log('Client disconnected');
+        ws.on('error', (error) => {
+            console.warn(`[WS ${clientId}] Error`, {
+                clientIp,
+                message: error?.message || String(error)
+            });
+        });
+
+        ws.on('close', (code, reasonBuffer) => {
+            const durationMs = Date.now() - connectedAt;
+            const reason = summarizeLogText(Buffer.isBuffer(reasonBuffer) ? reasonBuffer.toString('utf8') : String(reasonBuffer || ''), 120);
+            console.log(`[WS ${clientId}] Client disconnected`, {
+                clientIp,
+                durationMs,
+                code,
+                reason: reason || undefined
+            });
         });
     });
 }
