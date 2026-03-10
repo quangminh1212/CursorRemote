@@ -1276,7 +1276,9 @@ async function openModeDropdown() {
         return;
     }
 
-    setDropdownLoading(modeMenu, 'Mode');
+    const fallback = normalizeModeDropdownState({ current: currentMode });
+    availableModes = fallback.items.map((item) => item.label);
+    buildModeDropdownMenu(modeMenu, fallback);
     toggleDropdown(modeMenu, modeBtn);
 
     try {
@@ -1287,32 +1289,32 @@ async function openModeDropdown() {
             setCurrentModeValue(data.current);
             normalized.current = getModeDisplayLabel(data.current);
         }
-        buildModeDropdownMenu(modeMenu, normalized);
+        if (modeMenu.classList.contains('show')) {
+            buildModeDropdownMenu(modeMenu, normalized);
+        }
     } catch (e) {
-        const normalized = normalizeModeDropdownState({ current: currentMode });
-        availableModes = normalized.items.map((item) => item.label);
-        buildModeDropdownMenu(modeMenu, normalized);
+        // Keep fallback menu if live fetch fails.
     }
 }
 
-async function openModelDropdown() {
+function openModelDropdown() {
     const isOpen = modelMenu.classList.contains('show');
     if (isOpen) {
         closeAllDropdowns();
         return;
     }
 
-    setDropdownLoading(modelMenu, 'Model');
+    const immediateState = normalizeModelDropdownState(
+        lastModelDropdownState && typeof lastModelDropdownState === 'object'
+            ? lastModelDropdownState
+            : getModelDropdownFallbackState({
+                current: currentModel && currentModel !== 'Unknown' ? currentModel : modelText.textContent
+            })
+    );
+    applyNormalizedModelDropdownState(immediateState, { rebuildMenu: true });
     toggleDropdown(modelMenu, modelBtn);
-
-    try {
-        await syncModelDropdownState({ rebuildMenu: true, delays: [0] });
-    } catch (e) {
-        const normalized = normalizeModelDropdownState(getModelDropdownFallbackState({
-            current: currentModel && currentModel !== 'Unknown' ? currentModel : modelText.textContent
-        }));
-        applyNormalizedModelDropdownState(normalized, { rebuildMenu: true });
-    }
+    syncModelDropdownState({ rebuildMenu: true, delays: [0] })
+        .catch((error) => console.error('[SYNC] Failed to open model dropdown', error));
 }
 
 // --- Mode dropdown ---

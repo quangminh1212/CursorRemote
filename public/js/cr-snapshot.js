@@ -229,7 +229,7 @@ function connectWebSocket() {
             return;
         }
         // Hash-based dedup: only fetch if content actually changed
-        if (data.type === 'snapshot_update' && autoRefreshEnabled && !userIsScrolling) {
+        if (data.type === 'snapshot_update' && autoRefreshEnabled) {
             if (data.hash && data.hash === lastRenderedHash) return; // Skip identical
             loadSnapshot({ expectedHash: data.hash || '' });
         }
@@ -392,9 +392,17 @@ ${snapshotRootScope} [id*="headlessui"] {
     position: absolute !important;
 }
 
+${snapshotRootScope} .cr-preserved-alerts {
+    display: grid !important;
+    gap: 8px !important;
+    margin: 8px 0 14px !important;
+}
+
 ${snapshotRootScope} .announcement-modal,
+${snapshotRootScope} .cr-preserved-alert,
 ${snapshotRootScope} [role="alert"],
-${snapshotRootScope} [aria-live="assertive"] {
+${snapshotRootScope} [aria-live="assertive"],
+${snapshotRootScope} [aria-live="polite"] {
     display: block !important;
     position: relative !important;
     inset: auto !important;
@@ -410,7 +418,9 @@ ${snapshotRootScope} [aria-live="assertive"] {
 
 ${snapshotRootScope} .announcement-modal-close-button,
 ${snapshotRootScope} .announcement-modal button[aria-label*="close" i],
-${snapshotRootScope} .announcement-modal button[title*="close" i] {
+${snapshotRootScope} .announcement-modal button[title*="close" i],
+${snapshotRootScope} .cr-preserved-alert button[aria-label*="close" i],
+${snapshotRootScope} .cr-preserved-alert button[title*="close" i] {
     position: absolute !important;
     top: 10px !important;
     right: 10px !important;
@@ -429,12 +439,16 @@ ${snapshotRootScope} .announcement-modal button[title*="close" i] {
 
 ${snapshotRootScope} .announcement-modal-close-button::before,
 ${snapshotRootScope} .announcement-modal button[aria-label*="close" i]::before,
-${snapshotRootScope} .announcement-modal button[title*="close" i]::before {
+${snapshotRootScope} .announcement-modal button[title*="close" i]::before,
+${snapshotRootScope} .cr-preserved-alert button[aria-label*="close" i]::before,
+${snapshotRootScope} .cr-preserved-alert button[title*="close" i]::before {
     content: '×' !important;
 }
 
 ${snapshotRootScope} .announcement-modal strong,
-${snapshotRootScope} .announcement-modal b {
+${snapshotRootScope} .announcement-modal b,
+${snapshotRootScope} .cr-preserved-alert strong,
+${snapshotRootScope} .cr-preserved-alert b {
     display: block !important;
     position: relative !important;
     margin: 0 28px 8px 0 !important;
@@ -446,7 +460,9 @@ ${snapshotRootScope} .announcement-modal b {
 }
 
 ${snapshotRootScope} .announcement-modal strong::before,
-${snapshotRootScope} .announcement-modal b::before {
+${snapshotRootScope} .announcement-modal b::before,
+${snapshotRootScope} .cr-preserved-alert strong::before,
+${snapshotRootScope} .cr-preserved-alert b::before {
     content: '' !important;
     position: absolute !important;
     left: 0 !important;
@@ -458,19 +474,25 @@ ${snapshotRootScope} .announcement-modal b::before {
 
 ${snapshotRootScope} .announcement-modal-close-button::before,
 ${snapshotRootScope} .announcement-modal button[aria-label*="close" i]::before,
-${snapshotRootScope} .announcement-modal button[title*="close" i]::before {
+${snapshotRootScope} .announcement-modal button[title*="close" i]::before,
+${snapshotRootScope} .cr-preserved-alert button[aria-label*="close" i]::before,
+${snapshotRootScope} .cr-preserved-alert button[title*="close" i]::before {
     content: '\\00d7' !important;
 }
 
 ${snapshotRootScope} .announcement-modal > div,
 ${snapshotRootScope} .announcement-modal p,
-${snapshotRootScope} .announcement-modal span:not(.codicon) {
+${snapshotRootScope} .announcement-modal span:not(.codicon),
+${snapshotRootScope} .cr-preserved-alert > div,
+${snapshotRootScope} .cr-preserved-alert p,
+${snapshotRootScope} .cr-preserved-alert span:not(.codicon) {
     font-size: 13.1px !important;
     line-height: 1.42 !important;
     color: rgba(255, 255, 255, 0.84) !important;
 }
 
-${snapshotRootScope} .announcement-modal > :last-child {
+${snapshotRootScope} .announcement-modal > :last-child,
+${snapshotRootScope} .cr-preserved-alert > :last-child {
     margin-top: 14px !important;
     font-size: 12.3px !important;
     line-height: 1.38 !important;
