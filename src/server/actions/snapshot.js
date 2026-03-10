@@ -42,6 +42,33 @@ async function captureSnapshot(cdp) {
         const notificationKeywordPattern = /connection\\s+error|free\\s+plans\\s+can\\s+only\\s+use\\s+auto|copy\\s+request|upgrade\\s+plans|\\berror\\b|\\bwarning\\b|\\bfailed\\b/i;
 
         const clone = panel.cloneNode(true);
+
+        // Remove inactive chat tab panes to prevent content tripling
+        // When multiple chat tabs exist, the panel contains multiple .split-view-view
+        // panes but only the active one should be shown. The CSS overrides make hidden
+        // panes visible (position:static), so we must remove them from the clone.
+        const paneViews = Array.from(clone.querySelectorAll('.split-view-view'));
+        if (paneViews.length > 1) {
+            // Find the active pane: the one containing the composer/editor or the
+            // one that was visible (had non-zero dimensions in the original DOM)
+            const originalPaneViews = Array.from(panel.querySelectorAll('.split-view-view'));
+            const activePaneIndex = originalPaneViews.findIndex(pv => {
+                const rect = pv.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0 &&
+                    (pv.querySelector('[data-lexical-editor="true"], [contenteditable="true"], .composer-bar, [data-composer-id]'));
+            });
+            // Fallback: find pane with largest visible area
+            const fallbackIndex = activePaneIndex >= 0 ? activePaneIndex :
+                originalPaneViews.reduce((bestIdx, pv, idx, arr) => {
+                    const rect = pv.getBoundingClientRect();
+                    const area = rect.width * rect.height;
+                    const bestRect = arr[bestIdx]?.getBoundingClientRect() || { width: 0, height: 0 };
+                    return area > bestRect.width * bestRect.height ? idx : bestIdx;
+                }, 0);
+            paneViews.forEach((pv, idx) => {
+                if (idx !== fallbackIndex) pv.remove();
+            });
+        }
         const preservedAlerts = [];
         const preservedAlertKeys = new Set();
         const toNormalizedAlertText = (node) => String(node?.innerText || node?.textContent || '')
