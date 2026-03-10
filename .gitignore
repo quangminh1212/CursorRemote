@@ -2,7 +2,7 @@
 node_modules/
 package-lock.json
 
-# Logs
+# Logs & Runtime output
 *.log
 log.txt
 log.old.txt
@@ -11,6 +11,13 @@ server-live*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Debug & test output files
+*-debug.log
+*-test.stdout.log
+*-test.stderr.log
+*.stderr.log
+*.stdout.log
 
 # OS files
 .DS_Store
@@ -47,3 +54,6 @@ registry/snapshot_debug.html
 # Tauri build artifacts
 src-tauri/target/
 src-tauri/gen/
+
+# Legacy backup files (removed after refactor)
+public/js/app.js
