@@ -111,7 +111,6 @@ async function connectCDP(url) {
             reject(new Error('CDP connection closed'));
         }
         pendingCalls.clear();
-        cdpConnection = null;
     });
 
     ws.on('error', (err) => {
