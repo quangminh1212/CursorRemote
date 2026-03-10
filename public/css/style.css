@@ -4600,13 +4600,13 @@ body.has-chat-tabs:not(.home-screen) .toolbar-chip {
     font-size: 11.8px;
 }
 
-body.has-chat-tabs:not(.home-screen) #modeBtn[data-mode="debug"] {
-    background: rgba(197, 74, 66, 0.2);
-    color: #ff6e64;
+body.has-chat-tabs:not(.home-screen) .toolbar-chip#modeBtn[data-mode="debug"] {
+    background: rgba(197, 74, 66, 0.2) !important;
+    color: #ff6e64 !important;
 }
 
-body.has-chat-tabs:not(.home-screen) #modeBtn[data-mode="debug"] .mode-chip-icon,
-body.has-chat-tabs:not(.home-screen) #modeBtn[data-mode="debug"] .toolbar-chip-caret {
+body.has-chat-tabs:not(.home-screen) .toolbar-chip#modeBtn[data-mode="debug"] .mode-chip-icon,
+body.has-chat-tabs:not(.home-screen) .toolbar-chip#modeBtn[data-mode="debug"] .toolbar-chip-caret {
     color: inherit;
 }
 
