@@ -407,6 +407,7 @@ set "APP_MODE="
 set "APP_MODEL="
 set "HAS_CHAT="
 set "MOBILE_URL="
+set "HTTP_ONLY_STREAK=0"
 
 echo       Waiting for the server to report ready state...
 for /l %%i in (1,1,45) do (
@@ -427,6 +428,16 @@ for /l %%i in (1,1,45) do (
             set "STARTUP_READY=1"
             goto verify_ready
         )
+
+        if /i "!VERIFY_STATE!"=="http" (
+            set /a HTTP_ONLY_STREAK+=1
+        ) else (
+            set "HTTP_ONLY_STREAK=0"
+        )
+
+        if !HTTP_ONLY_STREAK! GEQ 5 (
+            goto verify_http_partial
+        )
     )
 
     timeout /t 2 /nobreak >nul 2>&1
@@ -443,6 +454,13 @@ if /i "!VERIFY_STATE!"=="connected" (
 echo       [ERROR] Timed out waiting for !BROWSER_URL! to become ready.
 call :log "Timed out waiting for startup readiness"
 exit /b 1
+
+:verify_http_partial
+echo       [WARN] HTTP server is up, but Cursor CDP is not ready yet.
+echo              Opening the web UI anyway so the session can recover once Cursor appears.
+echo              If needed, start Cursor manually and refresh the page after a few seconds.
+call :log "Verification ended in http-only state"
+exit /b 0
 
 :verify_ready
 for /f "usebackq delims=" %%u in (`!PS_CMD! -Command "$ProgressPreference = 'SilentlyContinue'; try { $response = & curl.exe -ks '!BROWSER_URL!/qr-info'; if ($LASTEXITCODE -eq 0 -and $response) { $r = ConvertFrom-Json -InputObject $response; if ($r.connectUrl) { $r.connectUrl } } } catch { }"`) do (

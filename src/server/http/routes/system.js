@@ -6,6 +6,10 @@ import { setSignedAuthCookie } from '../auth.js';
 
 const execAsync = promisify(exec);
 
+function isCdpConnectionReady(cdpConnection) {
+    return !!(cdpConnection && cdpConnection.ws && cdpConnection.ws.readyState === 1);
+}
+
 const UI_INSPECT_EXPR = `(() => {
     try {
         if (typeof window === 'undefined' || typeof document === 'undefined') {
@@ -87,7 +91,7 @@ const UI_INSPECT_EXPR = `(() => {
 
 function getConnectedCdp(getCdpConnection, res) {
     const cdpConnection = getCdpConnection();
-    if (!cdpConnection) {
+    if (!isCdpConnectionReady(cdpConnection)) {
         res.status(503).json({ error: 'CDP disconnected' });
         return null;
     }
@@ -98,7 +102,7 @@ function summarizeLogText(value, maxLength = 120) {
     const normalized = String(value || '').replace(/\s+/g, ' ').trim();
     if (!normalized) return '';
     return normalized.length > maxLength
-        ? `${normalized.slice(0, Math.max(0, maxLength - 1))}…`
+        ? `${normalized.slice(0, Math.max(0, maxLength - 3))}...`
         : normalized;
 }
 
@@ -282,9 +286,14 @@ export function registerSystemRoutes(app, {
 
     app.get('/health', (req, res) => {
         const cdpConnection = getCdpConnection();
+        const cdpConnected = isCdpConnectionReady(cdpConnection);
+        const snapshot = getSnapshot();
+        const snapshotReady = !!snapshot?.html;
         res.json({
             status: 'ok',
-            cdpConnected: cdpConnection?.ws?.readyState === 1,
+            readyState: cdpConnected ? (snapshotReady ? 'ready' : 'connected') : 'http',
+            cdpConnected,
+            snapshotReady,
             uptime: process.uptime(),
             timestamp: new Date().toISOString(),
             https: hasSSL,
@@ -493,3 +502,4 @@ export function registerSystemRoutes(app, {
         res.json(results);
     });
 }
+
