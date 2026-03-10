@@ -88,7 +88,7 @@ function setTextContent(element, value) {
 }
 
 function getComposerPlaceholder() {
-    if (document.body.classList.contains('home-screen')) {
+    if (!document.body.classList.contains('has-chat-tabs') && document.body.classList.contains('home-screen')) {
         return HOME_COMPOSER_PLACEHOLDER;
     }
 
@@ -452,6 +452,7 @@ let snapshotRequestInFlight = null;
 
 function setHasChatTabs(hasTabs) {
     document.body.classList.toggle('has-chat-tabs', !!hasTabs);
+    updateComposerPlaceholder();
 }
 
 function renderHeaderChatTabs(tabs = [], activeTitle = '') {
@@ -909,6 +910,13 @@ function setCurrentModeValue(value) {
     }
     modeText.textContent = displayValue;
     modeBtn.dataset.mode = displayValue.toLowerCase();
+    if (displayValue.toLowerCase() === 'debug') {
+        modeBtn.style.backgroundColor = 'rgba(197, 74, 66, 0.2)';
+        modeBtn.style.color = '#ff6e64';
+    } else {
+        modeBtn.style.backgroundColor = '';
+        modeBtn.style.color = '';
+    }
     updateComposerPlaceholder();
     return displayValue;
 }
@@ -1308,11 +1316,11 @@ ${snapshotRootScope} [aria-live="assertive"] {
     display: block !important;
     position: relative !important;
     inset: auto !important;
-    margin: 10px 0 14px !important;
-    padding: 14px 16px !important;
-    background: #47484c !important;
-    border: 1px solid rgba(255, 255, 255, 0.08) !important;
-    border-radius: 12px !important;
+    margin: 8px 0 14px !important;
+    padding: 14px 16px 15px !important;
+    background: #4a4b4f !important;
+    border: 1px solid rgba(255, 255, 255, 0.07) !important;
+    border-radius: 10px !important;
     color: rgba(255, 255, 255, 0.92) !important;
     box-shadow: none !important;
     overflow: hidden !important;
@@ -1364,6 +1372,27 @@ ${snapshotRootScope} .announcement-modal b::before {
     width: 16px !important;
     height: 16px !important;
     background: center / contain no-repeat url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23b8bac0' stroke-width='1.35' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 2.2 13.2 12a1 1 0 0 1-.88 1.5H3.68A1 1 0 0 1 2.8 12L8 2.2Z'/%3E%3Cpath d='M8 5.5v3.4'/%3E%3Ccircle cx='8' cy='11.5' r='.55' fill='%23b8bac0' stroke='none'/%3E%3C/svg%3E") !important;
+}
+
+${snapshotRootScope} .announcement-modal-close-button::before,
+${snapshotRootScope} .announcement-modal button[aria-label*="close" i]::before,
+${snapshotRootScope} .announcement-modal button[title*="close" i]::before {
+    content: '\\00d7' !important;
+}
+
+${snapshotRootScope} .announcement-modal > div,
+${snapshotRootScope} .announcement-modal p,
+${snapshotRootScope} .announcement-modal span:not(.codicon) {
+    font-size: 13.1px !important;
+    line-height: 1.42 !important;
+    color: rgba(255, 255, 255, 0.84) !important;
+}
+
+${snapshotRootScope} .announcement-modal > :last-child {
+    margin-top: 14px !important;
+    font-size: 12.3px !important;
+    line-height: 1.38 !important;
+    color: rgba(255, 255, 255, 0.56) !important;
 }
 
 ${snapshotRootScope} [style*="color: rgb(0, 0, 0)"],
