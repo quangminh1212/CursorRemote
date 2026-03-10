@@ -1,6 +1,6 @@
 import fs from 'fs';
 import { evaluateCursor, clickAtPoint } from '../cdp-eval.js';
-import { createTraceId, logTraceStep, summarizeActionResultForLog } from '../logger.js';
+import { createTraceId, logTraceStep, summarizeLogText, summarizeLogValue, summarizeActionResultForLog } from '../logger.js';
 
 // Inject message into Cursor
 async function injectMessage(cdp, text, traceId = null) {
