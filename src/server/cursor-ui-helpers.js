@@ -568,11 +568,17 @@ const __cr = (() => {
         return texts;
     };
 
-    const findModelSearchInput = (root = document) => Array.from(root.querySelectorAll('input, textarea, [role="textbox"]')).find(el => {
-        if (!isVisible(el)) return false;
-        const placeholder = normalizeText(el.getAttribute('placeholder') || el.getAttribute('aria-label') || '');
-        return /search/i.test(placeholder);
-    }) || null;
+    const findModelSearchInput = (root = document) => {
+        const candidates = Array.from(root.querySelectorAll('input, textarea, [role="textbox"]'))
+            .filter(isVisible);
+        return candidates.find(el => {
+            const placeholder = normalizeText(el.getAttribute('placeholder') || el.getAttribute('aria-label') || '');
+            return /search models?/i.test(placeholder);
+        }) || candidates.find(el => {
+            const placeholder = normalizeText(el.getAttribute('placeholder') || el.getAttribute('aria-label') || '');
+            return /search/i.test(placeholder);
+        }) || null;
+    };
 
     const MODEL_MENU_MARKERS = [
         /^auto(?:\b|\s)/i,
@@ -593,10 +599,21 @@ const __cr = (() => {
         }
 
         const text = normalizeText(textOf(container));
+        const hasSearchInput = !!findModelSearchInput(container);
+        const markerMatches = MODEL_MENU_MARKERS.reduce((count, marker) => count + (marker.test(text) ? 1 : 0), 0);
+        const plausibleModelCount = getLeafTexts(container)
+            .filter(isPlausibleModelText)
+            .length;
+
+        if (!hasSearchInput && markerMatches === 0 && plausibleModelCount < 3) {
+            return -Infinity;
+        }
+
         let score = 0;
 
-        if (findModelSearchInput(container)) score += 5;
-        score += MODEL_MENU_MARKERS.reduce((count, marker) => count + (marker.test(text) ? 1 : 0), 0) * 3;
+        if (hasSearchInput) score += 5;
+        score += markerMatches * 3;
+        score += Math.min(4, plausibleModelCount);
 
         const modelButton = findModelButton();
         if (modelButton) {
@@ -662,7 +679,36 @@ const __cr = (() => {
         }
 
         const cls = getClassName(switchEl).toLowerCase();
-        return cls.includes('checked') || cls.includes('enabled') || cls.includes('active') || cls.includes('on');
+        if (cls.includes('checked') || cls.includes('enabled') || cls.includes('active') || cls.includes('on')) {
+            return true;
+        }
+
+        const visualCandidates = Array.from(el?.querySelectorAll?.('div, span') || []).filter(isVisible);
+        const track = visualCandidates.find((candidate) => {
+            const rect = candidate.getBoundingClientRect();
+            if (rect.width < 20 || rect.width > 40 || rect.height < 10 || rect.height > 24) return false;
+            const style = getComputedStyle(candidate);
+            const borderRadius = parseFloat(style.borderRadius || '0');
+            return borderRadius >= Math.max(4, rect.height / 2 - 1) && candidate.querySelector('div, span');
+        });
+
+        if (!track) return false;
+
+        const trackRect = track.getBoundingClientRect();
+        const knob = Array.from(track.querySelectorAll('div, span'))
+            .filter(isVisible)
+            .find((candidate) => {
+                const rect = candidate.getBoundingClientRect();
+                if (rect.width < 8 || rect.width > 16 || rect.height < 8 || rect.height > 16) return false;
+                const style = getComputedStyle(candidate);
+                return /rgba?\(255,\s*255,\s*255(?:,\s*[\d.]+)?\)/i.test(style.backgroundColor || '');
+            });
+
+        if (!knob) return false;
+
+        const knobRect = knob.getBoundingClientRect();
+        const travel = Math.max(trackRect.width - knobRect.width - 4, 0);
+        return travel > 0 && (knobRect.left - trackRect.left) > (travel / 2);
     };
 
     const isSelectableRowActive = (el) => {
@@ -737,6 +783,21 @@ const __cr = (() => {
             });
     };
 
+    const getModelMenuOptionIconName = (rowEl, title = '') => {
+        if (!rowEl) return '';
+
+        const iconClasses = Array.from(rowEl.querySelectorAll('[class*="codicon-"], .codicon'))
+            .map(getClassName)
+            .join(' ');
+
+        if (/\bcodicon-brain\b/i.test(iconClasses)) return 'brain';
+        if (/\bcodicon-cloud\b/i.test(iconClasses)) return 'cloud';
+
+        const normalizedTitle = normalizeText(title);
+        if (normalizedTitle && !/^gpt-4$/i.test(normalizedTitle)) return 'brain';
+        return '';
+    };
+
     const getSelectedModelMenuOption = (root = findModelMenuRoot()) => {
         const rows = getModelMenuRows(root)
             .filter((row) => isPlausibleModelText(row.text));
@@ -806,7 +867,7 @@ const __cr = (() => {
             return {
                 key: def.key,
                 label: def.label,
-                description,
+                description: description.toLowerCase() === def.label.toLowerCase() ? '' : description,
                 enabled: getSwitchState(row.element) || (def.key === 'auto' && /^auto$/i.test(current))
             };
         }).filter(Boolean);
@@ -818,6 +879,7 @@ const __cr = (() => {
         ];
         const seen = new Set();
         const options = [];
+        const items = [];
 
         for (const row of rows) {
             const title = row.text;
@@ -828,6 +890,10 @@ const __cr = (() => {
             if (seen.has(key)) continue;
             seen.add(key);
             options.push(title);
+            items.push({
+                value: title,
+                icon: getModelMenuOptionIconName(row.element, title)
+            });
             targets.push({
                 kind: 'option',
                 title,
@@ -838,6 +904,25 @@ const __cr = (() => {
 
         if (!options.length && current && current !== 'Unknown' && !/^auto$/i.test(current)) {
             options.push(current);
+            items.push({
+                value: current,
+                icon: getModelMenuOptionIconName(null, current)
+            });
+        }
+
+        const footerRow = rows
+            .filter(row => /^add models?$/i.test(row.text))
+            .sort((a, b) => (a.rect.height - b.rect.height) || (a.rect.top - b.rect.top))[0] || null;
+
+        if (footerRow) {
+            targets.push({
+                kind: 'footer',
+                key: 'add-models',
+                label: 'Add Models',
+                title: 'Add Models',
+                x: Math.round(footerRow.rect.left + (footerRow.rect.width / 2)),
+                y: Math.round(footerRow.rect.top + (footerRow.rect.height / 2))
+            });
         }
 
         return {
@@ -845,7 +930,8 @@ const __cr = (() => {
             searchPlaceholder,
             toggles,
             options,
-            footerLabel: rows.some(row => /^add models?$/i.test(row.text)) ? 'Add Models' : '',
+            items,
+            footerLabel: footerRow ? 'Add Models' : '',
             targets
         };
     };

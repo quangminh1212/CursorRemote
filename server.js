@@ -10,7 +10,7 @@ import { killPortProcess, getLocalIP, getJson } from './src/server/system-utils.
 import { launchcursorWithCDP } from './src/server/cursor-process.js';
 import { captureSnapshot } from './src/server/actions/snapshot.js';
 import { injectMessage, injectFile } from './src/server/actions/inject.js';
-import { setMode, setModel, setModelToggle, getDropdownOptions, stopGeneration } from './src/server/actions/mode-model.js';
+import { setMode, setModel, setModelToggle, triggerModelMenuAction, getDropdownOptions, stopGeneration } from './src/server/actions/mode-model.js';
 import { clickElement, remoteScroll } from './src/server/actions/ui-actions.js';
 import { startNewChat, getChatHistory, selectChat, closeHistory, hasChatOpen } from './src/server/actions/chat.js';
 import { getAppState, hashString, isLocalRequest } from './src/server/app-state.js';
@@ -118,6 +118,7 @@ async function main() {
             setMode,
             setModel,
             setModelToggle,
+            triggerModelMenuAction,
             startNewChat,
             stopGeneration
         });

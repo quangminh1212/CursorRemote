@@ -815,6 +815,50 @@ async function setModelToggle(cdp, toggleKey, enabled, traceId = null) {
     return result;
 }
 
+async function triggerModelMenuAction(cdp, actionKey, traceId = null) {
+    const normalizedAction = String(actionKey || '').trim().toLowerCase();
+    if (!normalizedAction) return { error: 'Invalid model action' };
+
+    const supportedActions = {
+        'add-models': (target) => target.kind === 'footer' && target.key === 'add-models'
+    };
+    const matcher = supportedActions[normalizedAction];
+    if (!matcher) {
+        return { error: 'Unsupported model action' };
+    }
+
+    const menuState = await getDropdownOptions(cdp, 'model', traceId);
+    const targetEntry = Array.isArray(menuState?.targets)
+        ? menuState.targets.find((target) => matcher(target))
+        : null;
+
+    if (!menuState?.buttonPoint || !targetEntry) {
+        return {
+            error: 'model_action_not_found',
+            action: normalizedAction,
+            currentModel: menuState?.current || 'Unknown'
+        };
+    }
+
+    logTraceStep(traceId, 'triggerModelMenuAction.directClick', {
+        action: normalizedAction,
+        target: targetEntry.title || targetEntry.key || normalizedAction,
+        x: targetEntry.x,
+        y: targetEntry.y
+    });
+
+    await clickAtPoint(cdp, menuState.buttonPoint.x, menuState.buttonPoint.y);
+    await new Promise((resolve) => setTimeout(resolve, 260));
+    await clickAtPoint(cdp, targetEntry.x, targetEntry.y);
+    await new Promise((resolve) => setTimeout(resolve, 320));
+
+    return {
+        success: true,
+        action: normalizedAction,
+        currentModel: menuState.current || 'Unknown'
+    };
+}
+
 async function getDropdownOptions(cdp, kind, traceId = null) {
     const normalizedKind = kind === 'model' ? 'model' : 'mode';
     logTraceStep(traceId, 'getDropdownOptions.request', { kind: normalizedKind });
@@ -876,6 +920,7 @@ async function getDropdownOptions(cdp, kind, traceId = null) {
         let toggles = [];
         let footerLabel = '';
         let targets = [];
+        let items = [];
 
         if (kind === 'model') {
             const modelMenuState = __cr.getModelMenuState();
@@ -883,6 +928,7 @@ async function getDropdownOptions(cdp, kind, traceId = null) {
             toggles = Array.isArray(modelMenuState.toggles) ? modelMenuState.toggles : [];
             footerLabel = modelMenuState.footerLabel || '';
             targets = Array.isArray(modelMenuState.targets) ? modelMenuState.targets : [];
+            items = Array.isArray(modelMenuState.items) ? modelMenuState.items.slice(0, 80) : [];
 
             const autoToggle = toggles.find(toggle => toggle.key === 'auto' || /^auto$/i.test(toggle.label || ''));
             if (autoToggle) {
@@ -951,7 +997,8 @@ async function getDropdownOptions(cdp, kind, traceId = null) {
             autoLabel,
             autoDescription,
             footerLabel,
-            targets
+            targets,
+            items
         };
     `, {
         accept: (value) => value && typeof value === 'object'
@@ -963,12 +1010,12 @@ async function getDropdownOptions(cdp, kind, traceId = null) {
     if (normalizedKind === 'model' && result && !result.error) {
         const fallbackAutoDescription = 'Balanced quality and speed, recommended for most tasks';
         const knownModelItems = [
-            { value: 'Composer 1.5', icon: 'cloud' },
-            { value: 'GPT-5.4', icon: 'cloud' },
-            { value: 'GPT-5.3 Codex', icon: 'cloud' },
-            { value: 'Sonnet 4.6', icon: 'cloud' },
-            { value: 'Opus 4.6', icon: 'cloud' },
-            { value: 'Gemini 3 Flash', icon: 'cloud' },
+            { value: 'Composer 1.5', icon: 'brain' },
+            { value: 'GPT-5.3 Codex', icon: 'brain' },
+            { value: 'GPT-5.4', icon: 'brain' },
+            { value: 'Sonnet 4.6', icon: 'brain' },
+            { value: 'Opus 4.6', icon: 'brain' },
+            { value: 'Gemini 3 Flash', icon: 'brain' },
             { value: 'gpt-4', icon: '' }
         ];
         const iconByValue = new Map(knownModelItems.map((item) => [item.value.toLowerCase(), item.icon]));
@@ -1002,26 +1049,36 @@ async function getDropdownOptions(cdp, kind, traceId = null) {
         const fallbackCurrent = normalizedCurrent && normalizedCurrent !== 'Unknown' ? normalizedCurrent : 'Auto';
         const liveToggles = Array.isArray(result.toggles)
             ? result.toggles
-                .map((toggle) => ({
-                    key: String(toggle?.key || toggle?.label || '')
+                .map((toggle) => {
+                    const label = String(toggle?.label || toggle?.key || '').trim();
+                    const rawDescription = String(toggle?.description || '').trim();
+                    const normalizedDescription = rawDescription.toLowerCase().startsWith(`${label.toLowerCase()} `)
+                        ? rawDescription.slice(label.length).trim()
+                        : rawDescription;
+                    return {
+                        key: String(toggle?.key || toggle?.label || '')
                         .trim()
                         .toLowerCase()
                         .replace(/\s+/g, '-'),
-                    label: String(toggle?.label || toggle?.key || '').trim(),
-                    description: String(toggle?.description || '').trim(),
-                    enabled: !!toggle?.enabled
-                }))
+                        label,
+                        description: normalizedDescription,
+                        enabled: !!toggle?.enabled
+                    };
+                })
                 .filter((toggle) => toggle.key && toggle.label)
             : [];
         const autoToggle = liveToggles.find((toggle) => toggle.key === 'auto') || null;
         const currentItem = fallbackCurrent && !/^auto$/i.test(fallbackCurrent)
             ? [{ value: fallbackCurrent, icon: iconByValue.get(fallbackCurrent.toLowerCase()) || '' }]
             : [];
-        const mergedItems = mergeLiveModelItems(
-            currentItem,
+        const liveItems = mergeLiveModelItems(
             Array.isArray(result.items) ? result.items : [],
             Array.isArray(result.options) ? result.options : []
         );
+        const hasCurrentItem = liveItems.some((item) => item.value.toLowerCase() === fallbackCurrent.toLowerCase());
+        const mergedItems = hasCurrentItem
+            ? liveItems
+            : mergeLiveModelItems(liveItems, currentItem);
 
         result.current = fallbackCurrent;
         result.searchPlaceholder = String(result.searchPlaceholder || '').trim();
@@ -1036,7 +1093,14 @@ async function getDropdownOptions(cdp, kind, traceId = null) {
             .trim() || fallbackAutoDescription;
         result.footerLabel = String(result.footerLabel || '').trim();
         result.live = true;
-        result.compactAuto = /^auto$/i.test(fallbackCurrent) && result.autoAvailable && !result.options.length;
+        result.compactAuto = !!(
+            /^auto$/i.test(fallbackCurrent)
+            && result.autoEnabled
+            && result.toggles.length === 1
+            && result.toggles[0]?.key === 'auto'
+            && !result.options.length
+            && !result.footerLabel
+        );
     }
 
     if (normalizedKind === 'mode' && result && !result.error) {
@@ -1074,4 +1138,4 @@ async function getDropdownOptions(cdp, kind, traceId = null) {
     return result;
 }
 
-export { getModeRequestCandidates, setMode, stopGeneration, setModel, setModelToggle, getDropdownOptions };
+export { getModeRequestCandidates, setMode, stopGeneration, setModel, setModelToggle, triggerModelMenuAction, getDropdownOptions };

@@ -105,6 +105,7 @@ export function registerCursorRoutes(app, {
     setMode,
     setModel,
     setModelToggle,
+    triggerModelMenuAction,
     startNewChat,
     stopGeneration
 }) {
@@ -143,6 +144,25 @@ export function registerCursorRoutes(app, {
             return;
         }
         const result = await setModelToggle(cdpConnection, key, enabled, trace.traceId);
+        trace.finish(result);
+        res.json(result);
+    });
+
+    app.post('/model-menu-action', async (req, res) => {
+        const { action } = req.body || {};
+        const trace = createActionTrace(req, 'model-menu-action', { action });
+        const cdpConnection = getConnectedCdp(getCdpConnection, res);
+        if (!cdpConnection) {
+            trace.finish({ error: 'CDP disconnected' }, { httpStatus: 503 });
+            return;
+        }
+
+        if (typeof triggerModelMenuAction !== 'function') {
+            trace.finish({ error: 'Model menu action is unavailable' }, { httpStatus: 501 });
+            return res.status(501).json({ success: false, error: 'Model menu action is unavailable' });
+        }
+
+        const result = await triggerModelMenuAction(cdpConnection, action, trace.traceId);
         trace.finish(result);
         res.json(result);
     });
