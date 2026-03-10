@@ -5,6 +5,7 @@ chcp 65001 >nul 2>&1
 
 cd /d "%~dp0"
 set "CR_RUNTIME_DIR=%CD%"
+set "PS_CMD=powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden"
 
 set "RUN_LOG=%CD%\log.txt"
 set "RUN_LOG_OLD=%CD%\log.old.txt"
@@ -13,10 +14,10 @@ set "CURSOR_STDERR_LOG=%CD%\cursor-launch.stderr.log"
 call :reset_runtime_logs
 set "CAN_PAUSE=1"
 set "CAN_CLEAR_SCREEN=1"
-for /f "usebackq delims=" %%r in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "[Console]::IsInputRedirected" 2^>nul`) do (
+for /f "usebackq delims=" %%r in (`!PS_CMD! -Command "[Console]::IsInputRedirected" 2^>nul`) do (
     if /i "%%r"=="True" set "CAN_PAUSE=0"
 )
-for /f "usebackq delims=" %%r in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "[Console]::IsOutputRedirected" 2^>nul`) do (
+for /f "usebackq delims=" %%r in (`!PS_CMD! -Command "[Console]::IsOutputRedirected" 2^>nul`) do (
     if /i "%%r"=="True" set "CAN_CLEAR_SCREEN=0"
 )
 call :log "========================================"
@@ -154,7 +155,7 @@ set "CURSOR_STORAGE_JSON=%APPDATA%\Cursor\User\globalStorage\storage.json"
 call :ensure_json_utf8_no_bom "!CURSOR_STORAGE_JSON!"
 
 if exist "!CURSOR_STORAGE_JSON!" (
-    for /f "usebackq delims=" %%i in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$storage = $env:APPDATA + '\Cursor\User\globalStorage\storage.json'; try { $json = Get-Content -Raw -LiteralPath $storage | ConvertFrom-Json; $uri = $json.windowsState.lastActiveWindow.folder; if (-not $uri -and $json.backupWorkspaces.folders -and $json.backupWorkspaces.folders.Count -gt 0) { $uri = $json.backupWorkspaces.folders[0].folderUri }; if ($uri) { $path = [System.Uri]::new($uri).LocalPath; if ($path -match '^/[A-Za-z]:') { $path = $path.Substring(1) }; $path = $path -replace '/', '\'; $path } } catch { }"`) do (
+    for /f "usebackq delims=" %%i in (`!PS_CMD! -Command "$storage = $env:APPDATA + '\Cursor\User\globalStorage\storage.json'; try { $json = Get-Content -Raw -LiteralPath $storage | ConvertFrom-Json; $uri = $json.windowsState.lastActiveWindow.folder; if (-not $uri -and $json.backupWorkspaces.folders -and $json.backupWorkspaces.folders.Count -gt 0) { $uri = $json.backupWorkspaces.folders[0].folderUri }; if ($uri) { $path = [System.Uri]::new($uri).LocalPath; if ($path -match '^/[A-Za-z]:') { $path = $path.Substring(1) }; $path = $path -replace '/', '\'; $path } } catch { }"`) do (
         set "LAST_REPO=%%i"
     )
 )
@@ -231,7 +232,8 @@ if !CDP_FOUND!==0 (
             call :log "Prepared Cursor argv.json with remote-debugging-port=!CDP_PORT!"
         )
 
-        taskkill /f /im Cursor.exe >nul 2>&1
+        echo       Stopping non-ancestor Cursor processes...
+        !PS_CMD! -Command "$ancestors = @(); $cur = $PID; while ($cur -and $cur -ne 0) { $ancestors += $cur; try { $p = (Get-CimInstance Win32_Process -Filter ('ProcessId=' + $cur) -ErrorAction Stop).ParentProcessId; if ($p -eq $cur) { break }; $cur = $p } catch { break } }; Get-Process -Name 'Cursor' -ErrorAction SilentlyContinue | Where-Object { $ancestors -notcontains $_.Id } | ForEach-Object { try { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue } catch {} }" >nul 2>&1
         timeout /t 2 /nobreak >nul 2>&1
 
         echo       Launching Cursor visibly on workspace: !TARGET_REPO!
@@ -364,7 +366,7 @@ if /i "!SERVER_MODE!"=="dev" (
     echo       Hot reload: enabled ^(watching server.js and public/* via nodemon^).
     call :log "Hot reload enabled via npm run dev"
 )
-start /b "" cmd /c "cd /d ""%CD%"" && set PORT=!PORT! && set CR_SKIP_AUTO_LAUNCH=1 && set CR_TERMINAL_LOG=!CR_TERMINAL_LOG! && set CR_RESET_LOG_ON_START=0 && !SERVER_COMMAND! >nul 2>&1"
+start /b /min "" cmd /c "cd /d ""%CD%"" && set PORT=!PORT! && set CR_SKIP_AUTO_LAUNCH=1 && set CR_TERMINAL_LOG=!CR_TERMINAL_LOG! && set CR_RESET_LOG_ON_START=0 && !SERVER_COMMAND! >nul 2>&1"
 
 if "!VERIFY_STARTUP!"=="1" (
     call :verify_server_startup
@@ -409,7 +411,7 @@ set "MOBILE_URL="
 echo       Waiting for the server to report ready state...
 for /l %%i in (1,1,45) do (
     set "VERIFY_RESULT="
-    for /f "usebackq delims=" %%r in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference = 'SilentlyContinue'; try { $base = '!BROWSER_URL!'; $healthRaw = & curl.exe -ks ($base + '/health'); if ($LASTEXITCODE -ne 0 -or -not $healthRaw) { exit 0 }; $health = ConvertFrom-Json -InputObject $healthRaw; $stateRaw = & curl.exe -ks ($base + '/app-state'); if ($LASTEXITCODE -ne 0 -or -not $stateRaw) { exit 0 }; $state = ConvertFrom-Json -InputObject $stateRaw; $snapshotOk = $false; try { $snapshotRaw = & curl.exe -ks ($base + '/snapshot'); if ($LASTEXITCODE -eq 0 -and $snapshotRaw) { $snapshot = ConvertFrom-Json -InputObject $snapshotRaw; $snapshotOk = [bool]$snapshot.html } } catch { $snapshotOk = $false }; if ($health.status -eq 'ok' -and $health.cdpConnected -and $snapshotOk -and $state.editorFound) { Write-Output ('ready|' + $state.mode + '|' + $state.model + '|' + $state.hasChat) } elseif ($health.status -eq 'ok' -and $health.cdpConnected) { Write-Output ('connected|' + $state.mode + '|' + $state.model + '|' + $state.hasChat) } elseif ($health.status -eq 'ok') { Write-Output 'http' } } catch { }"`) do (
+    for /f "usebackq delims=" %%r in (`!PS_CMD! -Command "$ProgressPreference = 'SilentlyContinue'; try { $base = '!BROWSER_URL!'; $healthRaw = & curl.exe -ks ($base + '/health'); if ($LASTEXITCODE -ne 0 -or -not $healthRaw) { exit 0 }; $health = ConvertFrom-Json -InputObject $healthRaw; $stateRaw = & curl.exe -ks ($base + '/app-state'); if ($LASTEXITCODE -ne 0 -or -not $stateRaw) { exit 0 }; $state = ConvertFrom-Json -InputObject $stateRaw; $snapshotOk = $false; try { $snapshotRaw = & curl.exe -ks ($base + '/snapshot'); if ($LASTEXITCODE -eq 0 -and $snapshotRaw) { $snapshot = ConvertFrom-Json -InputObject $snapshotRaw; $snapshotOk = [bool]$snapshot.html } } catch { $snapshotOk = $false }; if ($health.status -eq 'ok' -and $health.cdpConnected -and $snapshotOk -and $state.editorFound) { Write-Output ('ready|' + $state.mode + '|' + $state.model + '|' + $state.hasChat) } elseif ($health.status -eq 'ok' -and $health.cdpConnected) { Write-Output ('connected|' + $state.mode + '|' + $state.model + '|' + $state.hasChat) } elseif ($health.status -eq 'ok') { Write-Output 'http' } } catch { }"`) do (
         set "VERIFY_RESULT=%%r"
     )
 
@@ -443,7 +445,7 @@ call :log "Timed out waiting for startup readiness"
 exit /b 1
 
 :verify_ready
-for /f "usebackq delims=" %%u in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference = 'SilentlyContinue'; try { $response = & curl.exe -ks '!BROWSER_URL!/qr-info'; if ($LASTEXITCODE -eq 0 -and $response) { $r = ConvertFrom-Json -InputObject $response; if ($r.connectUrl) { $r.connectUrl } } } catch { }"`) do (
+for /f "usebackq delims=" %%u in (`!PS_CMD! -Command "$ProgressPreference = 'SilentlyContinue'; try { $response = & curl.exe -ks '!BROWSER_URL!/qr-info'; if ($LASTEXITCODE -eq 0 -and $response) { $r = ConvertFrom-Json -InputObject $response; if ($r.connectUrl) { $r.connectUrl } } } catch { }"`) do (
     set "MOBILE_URL=%%u"
 )
 
@@ -518,7 +520,7 @@ exit /b 1
 :stop_workspace_servers
 echo       Stopping existing Cursor Remote server processes for this workspace...
 set "FOUND_WORKSPACE_PROCESS=0"
-for /f "usebackq delims=" %%p in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$workspace = [regex]::Escape((Get-Location).Path); $managedPorts = 3000..3005; $portPids = @(); try { $portPids = Get-NetTCPConnection -State Listen -ErrorAction Stop | Where-Object { $managedPorts -contains $_.LocalPort } | Select-Object -ExpandProperty OwningProcess -Unique } catch { $portPids = @() }; Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and ( ((($_.CommandLine -match $workspace) -and ($_.CommandLine -match 'server\.js' -or $_.CommandLine -match 'nodemon' -or $_.CommandLine -match 'tauri-server\.mjs')) -or ($_.CommandLine -match 'watch-server\.ps1')) -or (($portPids -contains $_.ProcessId) -and ($_.CommandLine -match 'server\.js' -or $_.CommandLine -match 'nodemon' -or $_.CommandLine -match 'tauri-server\.mjs')) ) } | Select-Object -ExpandProperty ProcessId -Unique"`) do (
+for /f "usebackq delims=" %%p in (`!PS_CMD! -Command "$workspace = [regex]::Escape((Get-Location).Path); $managedPorts = 3000..3005; $portPids = @(); try { $portPids = Get-NetTCPConnection -State Listen -ErrorAction Stop | Where-Object { $managedPorts -contains $_.LocalPort } | Select-Object -ExpandProperty OwningProcess -Unique } catch { $portPids = @() }; Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and ( ((($_.CommandLine -match $workspace) -and ($_.CommandLine -match 'server\.js' -or $_.CommandLine -match 'nodemon' -or $_.CommandLine -match 'tauri-server\.mjs')) -or ($_.CommandLine -match 'watch-server\.ps1')) -or (($portPids -contains $_.ProcessId) -and ($_.CommandLine -match 'server\.js' -or $_.CommandLine -match 'nodemon' -or $_.CommandLine -match 'tauri-server\.mjs')) ) } | Select-Object -ExpandProperty ProcessId -Unique"`) do (
     if not "%%p"=="" (
         set "FOUND_WORKSPACE_PROCESS=1"
         echo         - PID %%p
@@ -533,7 +535,7 @@ exit /b 0
 set "JSON_UTF8_FILE=%~1"
 if not defined JSON_UTF8_FILE exit /b 0
 if not exist "!JSON_UTF8_FILE!" exit /b 0
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+%PS_CMD% -Command ^
   "$path = $env:JSON_UTF8_FILE; " ^
   "$bytes = [System.IO.File]::ReadAllBytes($path); " ^
   "if ($bytes.Length -ge 3 -and $bytes[0] -eq 239 -and $bytes[1] -eq 187 -and $bytes[2] -eq 191) { " ^
@@ -544,7 +546,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
 exit /b 0
 
 :write_cursor_argv
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+%PS_CMD% -Command ^
   "$ErrorActionPreference = 'Stop'; " ^
   "$path = $env:ARGV_FILE; " ^
   "$dir = Split-Path -Parent $path; " ^
@@ -565,7 +567,7 @@ exit /b !errorlevel!
 :launch_cursor_visible_silent
 if exist "%CURSOR_STDOUT_LOG%" del /f /q "%CURSOR_STDOUT_LOG%" >nul 2>&1
 if exist "%CURSOR_STDERR_LOG%" del /f /q "%CURSOR_STDERR_LOG%" >nul 2>&1
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+%PS_CMD% -Command ^
   "$ErrorActionPreference = 'Stop'; " ^
   "$exe = $env:CURSOR_EXE; " ^
   "$workspace = $env:TARGET_REPO; " ^
@@ -588,7 +590,7 @@ if "!CURSOR_EXE!"=="" (
     exit /b 0
 )
 
-for /f "usebackq delims=" %%r in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference = 'Stop'; $cursorExe = $env:CURSOR_EXE; $workspace = $env:TARGET_REPO; $shell = New-Object -ComObject WScript.Shell; if ($shell.AppActivate('Cursor')) { Start-Sleep -Milliseconds 300; Write-Output 'focused'; exit 0 }; $proc = Start-Process -FilePath $cursorExe -ArgumentList @($workspace) -PassThru; Start-Sleep -Seconds 3; if ($shell.AppActivate($proc.Id)) { Write-Output 'launched'; exit 0 }; if ($shell.AppActivate('Cursor')) { Write-Output 'launched'; exit 0 }; Write-Output 'started'"`) do (
+for /f "usebackq delims=" %%r in (`!PS_CMD! -Command "$ErrorActionPreference = 'Stop'; $cursorExe = $env:CURSOR_EXE; $workspace = $env:TARGET_REPO; $shell = New-Object -ComObject WScript.Shell; if ($shell.AppActivate('Cursor')) { Start-Sleep -Milliseconds 300; Write-Output 'focused'; exit 0 }; $proc = Start-Process -FilePath $cursorExe -ArgumentList @($workspace) -PassThru; Start-Sleep -Seconds 3; if ($shell.AppActivate($proc.Id)) { Write-Output 'launched'; exit 0 }; if ($shell.AppActivate('Cursor')) { Write-Output 'launched'; exit 0 }; Write-Output 'started'"`) do (
     set "CURSOR_WINDOW_ACTION=%%r"
 )
 
@@ -614,7 +616,7 @@ exit /b 0
 
 :log
 set "LOG_MESSAGE=%~1"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$path = $env:RUN_LOG; $line = '[' + (Get-Date).ToString('dd/MM/yyyy HH:mm:ss,ff') + '] ' + $env:LOG_MESSAGE; try { $fs = [System.IO.File]::Open($path, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite); $fs.Seek(0, [System.IO.SeekOrigin]::End) > $null; $bytes = [System.Text.Encoding]::UTF8.GetBytes($line + [Environment]::NewLine); $fs.Write($bytes, 0, $bytes.Length); $fs.Dispose() } catch { }" >nul 2>&1
+%PS_CMD% -Command "$path = $env:RUN_LOG; $line = '[' + (Get-Date).ToString('dd/MM/yyyy HH:mm:ss,ff') + '] ' + $env:LOG_MESSAGE; try { $fs = [System.IO.File]::Open($path, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite); $fs.Seek(0, [System.IO.SeekOrigin]::End) > $null; $bytes = [System.Text.Encoding]::UTF8.GetBytes($line + [Environment]::NewLine); $fs.Write($bytes, 0, $bytes.Length); $fs.Dispose() } catch { }" >nul 2>&1
 set "LOG_MESSAGE="
 exit /b 0
 

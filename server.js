@@ -1192,12 +1192,17 @@ const __cr = (() => {
         const seen = new Set();
         const items = [];
         const elements = Array.from(menu.querySelectorAll('button, [role="menuitem"], [role="button"], a, div, span')).filter(isVisible);
+        let currentSection = 'Recent';
 
         for (const el of elements) {
             const text = textOf(el);
             const lower = text.toLowerCase();
             if (!text || text.length < 2 || text.length > 140) continue;
-            if (lower === 'archived' || lower === 'no matching agent') continue;
+            if (lower === 'today' || lower === 'yesterday' || lower === 'recent' || lower === 'archived') {
+                currentSection = text;
+                continue;
+            }
+            if (lower === 'no matching agent') continue;
             if (lower.startsWith('show ')) continue;
             if (lower.endsWith(' ago') || /^\d+\s*(sec|min|hr|day|wk|mo|yr)/i.test(lower)) continue;
             if (seen.has(text)) continue;
@@ -1206,7 +1211,7 @@ const __cr = (() => {
             if (!clickable || !isVisible(clickable)) continue;
 
             seen.add(text);
-            items.push({ title: text });
+            items.push({ title: text, section: currentSection });
         }
 
         return items;
@@ -1720,7 +1725,24 @@ function iscursorRunning() {
 function killcursorProcesses() {
     try {
         if (process.platform === 'win32') {
-            execSync('taskkill /F /IM Cursor.exe', { stdio: 'ignore' });
+            // Build ancestor PID list to avoid killing the Cursor hosting this process (e.g. Antigravity)
+            const ancestors = new Set();
+            let cur = process.pid;
+            while (cur && cur !== 0) {
+                ancestors.add(cur);
+                try {
+                    const out = execSync(`wmic process where "ProcessId=${cur}" get ParentProcessId /value`, { stdio: ['pipe', 'pipe', 'ignore'], encoding: 'utf8' });
+                    const m = out.match(/ParentProcessId=(\d+)/);
+                    const parent = m ? parseInt(m[1], 10) : 0;
+                    if (!parent || parent === cur) break;
+                    cur = parent;
+                } catch { break; }
+            }
+            const ancestorList = [...ancestors].join(',');
+            execSync(
+                `powershell -NoProfile -NonInteractive -WindowStyle Hidden -Command "Get-Process -Name 'Cursor' -ErrorAction SilentlyContinue | Where-Object { @(${ancestorList}) -notcontains $_.Id } | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }"`,
+                { stdio: 'ignore' }
+            );
             return;
         }
 
@@ -2105,7 +2127,7 @@ async function captureSnapshot(cdp) {
         }
 
         const clone = panel.cloneNode(true);
-        clone.querySelectorAll('.composite.title, .title-actions, .simple-find-part-wrapper, .composer-input-blur-wrapper, .ai-input-full-input-box, .compact-agent-history-react-menu-content, .ui-menu__content, .context-view, .announcement-modal, .announcement-modal-close-button').forEach(el => el.remove());
+        clone.querySelectorAll('.composite.title, .title-actions, .simple-find-part-wrapper, .composer-input-blur-wrapper, .ai-input-full-input-box, .compact-agent-history-react-menu-content, .ui-menu__content, .context-view').forEach(el => el.remove());
 
         const scrollTarget = __cr.findPanelScrollRoot() || panel;
         const bodyStyles = getComputedStyle(document.body);
@@ -3643,7 +3665,7 @@ async function getChatHistory(cdp, traceId = null) {
         const menu = __cr.findHistoryMenu();
         const chats = __cr.getHistoryItems().slice(0, 50).map(item => ({
             title: item.title,
-            date: 'Recent'
+            section: item.section || 'Recent'
         }));
         const activeTitle = __cr.getActiveChatTitle() || '';
 
@@ -3671,14 +3693,6 @@ async function getChatHistory(cdp, traceId = null) {
         if (/(?:\u2026|\.{3})\s*$/u.test(String(right || '').trim()) && a.startsWith(b) && a.length > b.length) return true;
         return false;
     };
-
-    if (result?.success && Array.isArray(result.chats) && result.activeTitle) {
-        const activeIndex = result.chats.findIndex(chat => titlesMatch(chat?.title, result.activeTitle));
-        if (activeIndex > 0) {
-            const [activeChat] = result.chats.splice(activeIndex, 1);
-            result.chats.unshift(activeChat);
-        }
-    }
 
     logTraceStep(traceId, 'getChatHistory.complete', summarizeActionResultForLog(result));
     return result;
